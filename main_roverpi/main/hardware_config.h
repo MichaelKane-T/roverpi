@@ -1,0 +1,52 @@
+#ifndef HARDWARE_CONFIG_H
+#define HARDWARE_CONFIG_H
+
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/uart.h"
+#include "driver/rtc_io.h" // rtc_gpio_is_valid_gpio
+
+/*------------------- UART -------------------------*/
+#define UART_PORT       UART_NUM_2
+#define UART_TX_PIN     GPIO_NUM_17
+#define UART_RX_PIN     GPIO_NUM_16
+#define UART_BAUD_RATE  115200
+#define UART_BUF_SIZE   1024
+
+/*------------------- Servo ------------------------*/
+#define SERVO_GPIO          GPIO_NUM_18
+#define SERVO_PWM_TIMER     LEDC_TIMER_1
+#define SERVO_PWM_CHANNEL   LEDC_CHANNEL_2
+#define SERVO_MIN_US        500
+#define SERVO_MAX_US        2500
+#define SERVO_FREQ_HZ       50
+
+#define SERVO_RES           LEDC_TIMER_14_BIT
+#define SERVO_MAX_DUTY      ((1 << 14) - 1)
+
+/*------------------- HC-SR04 ----------------------*/
+#define TRIG_GPIO GPIO_NUM_4
+#define ECHO_GPIO GPIO_NUM_5
+
+/*------------------- TB6612FNG --------------------*/
+#define TB_STBY GPIO_NUM_14
+
+#define TB_AIN1 GPIO_NUM_26
+#define TB_AIN2 GPIO_NUM_27
+#define TB_PWMA GPIO_NUM_25
+
+#define TB_BIN1 GPIO_NUM_32
+#define TB_BIN2 GPIO_NUM_33
+#define TB_PWMB GPIO_NUM_13
+
+/*------------------- Motor PWM --------------------*/
+#define PWM_FREQ_HZ      1000
+#define PWM_RESOLUTION   LEDC_TIMER_8_BIT
+#define PWM_DUTY_MAX     255
+
+#define PWM_MODE         LEDC_LOW_SPEED_MODE
+#define PWM_TIMER        LEDC_TIMER_0
+#define PWM_CHANNEL_A    LEDC_CHANNEL_0
+#define PWM_CHANNEL_B    LEDC_CHANNEL_1
+
+#endif // HARDWARE_CONFIG_H
