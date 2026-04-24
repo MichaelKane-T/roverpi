@@ -49,4 +49,22 @@
 #define PWM_CHANNEL_A    LEDC_CHANNEL_0
 #define PWM_CHANNEL_B    LEDC_CHANNEL_1
 
+/*------------------- Motor Speed -------------------------*/
+#define MOTOR_SPEED_MAX  255
+#define MOTOR_SPEED_CRUISE  128
+#define MOTOR_SPEED_STOP 0
+
+/*------------------- Ultrasonic Sensor --------------------*/
+#define HCSR04_TIMEOUT_US          30000
+#define HCSR04_SOUND_CM_PER_US     0.0343f
+#define OBSTACLE_STOP_CM           15.0f
+
+/*------------------- Scanner Servo Angles -----------------*/
+#define SCANNER_SERVO_LEFT_DEG     30
+#define SCANNER_SERVO_CENTER_DEG   90
+#define SCANNER_SERVO_RIGHT_DEG    150
+#define SCANNER_SERVO_STEP_DEG     5
+#define SCANNER_SERVO_SETTLE_MS    250
+#define SERVO_PERIOD_US            20000
+
 #endif // HARDWARE_CONFIG_H

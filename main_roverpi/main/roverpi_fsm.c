@@ -11,6 +11,7 @@
 
 #include "roverpi_fsm.h"
 #include "hardware_config.h"
+#include "motor_control.h"
 
 #include "esp_log.h"
 
@@ -87,22 +88,23 @@ void roverpi_tick(bool path_clear, bool drive_cmd, bool fault_detected)
     // Action logic
     switch (current_state) {
         case STATE_INIT:
+            motors_stop();
             break;
 
         case STATE_STOP:
             ESP_LOGI(TAG, "STATE_STOP");
-            // motors_stop();
+            motors_stop();
             break;
 
         case STATE_DRIVE:
             ESP_LOGI(TAG, "STATE_DRIVE");
-            // motors_forward(180);
+            motors_forward(MOTOR_SPEED_CRUISE);
             cnt++;
             break;
 
         case STATE_FAULT:
             ESP_LOGE(TAG, "STATE_FAULT");
-            // motors_stop();
+            motors_stop();
             break;
 
         default:
