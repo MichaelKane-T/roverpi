@@ -1,0 +1,210 @@
+# Doxyfile 1.9.1 — RoverPi Project
+# Raspberry Pi Zero 2W + ESP32 Embedded Robotics Rover
+# Author: Michael Kane
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+
+DOXYFILE_ENCODING      = UTF-8
+PROJECT_NAME           = "RoverPi"
+PROJECT_NUMBER         = v0.1
+PROJECT_BRIEF          = "Embedded robotics rover — Pi Zero 2W + ESP32 with FreeRTOS, motor control, and camera streaming"
+PROJECT_LOGO           =
+OUTPUT_DIRECTORY       = doxygen
+OUTPUT_LANGUAGE        = English
+
+#---------------------------------------------------------------------------
+# Build options
+#---------------------------------------------------------------------------
+
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+RECURSIVE              = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+FULL_PATH_NAMES        = YES
+SHORT_NAMES            = NO
+JAVADOC_AUTOBRIEF      = YES
+TAB_SIZE               = 4
+MARKDOWN_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 5
+AUTOLINK_SUPPORT       = YES
+SUBGROUPING            = YES
+SORT_MEMBER_DOCS       = YES
+
+GENERATE_TODOLIST      = YES
+GENERATE_TESTLIST      = YES
+GENERATE_BUGLIST       = YES
+GENERATE_DEPRECATEDLIST= YES
+
+#---------------------------------------------------------------------------
+# Warnings
+#---------------------------------------------------------------------------
+
+QUIET                  = NO
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES
+WARN_AS_ERROR          = NO
+WARN_FORMAT            = "$file:$line: $text"
+WARN_LOGFILE           = doxygen/warnings.log
+
+#---------------------------------------------------------------------------
+# Input — ESP32 C sources + Pi Python app
+#---------------------------------------------------------------------------
+
+INPUT                  = \
+  esp32/main.c          \
+  esp32/motor.c         \
+  esp32/motor.h         \
+  esp32/sensor.c        \
+  esp32/sensor.h        \
+  esp32/fsm.c           \
+  esp32/fsm.h           \
+  app/main.py           \
+  app/pantilt.py        \
+  README.md
+
+USE_MDFILE_AS_MAINPAGE = README.md
+
+FILE_PATTERNS          = *.c \
+                         *.h \
+                         *.py \
+                         *.md
+
+RECURSIVE              = YES
+
+EXCLUDE                = \
+  esp32/build/          \
+  app/__pycache__/      \
+  app/.venv/            \
+  doxygen/
+
+EXCLUDE_PATTERNS       = */build/* \
+                         */__pycache__/* \
+                         */.venv/* \
+                         */managed_components/*
+
+INPUT_ENCODING         = UTF-8
+
+#---------------------------------------------------------------------------
+# Source browser
+#---------------------------------------------------------------------------
+
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+VERBATIM_HEADERS       = YES
+
+#---------------------------------------------------------------------------
+# HTML output
+#---------------------------------------------------------------------------
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_FILE_EXTENSION    = .html
+HTML_DYNAMIC_MENUS     = YES
+HTML_DYNAMIC_SECTIONS  = YES
+HTML_TIMESTAMP         = YES
+GENERATE_TREEVIEW      = YES
+TREEVIEW_WIDTH         = 270
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO
+
+# Color: deep blue to match embedded/systems aesthetic
+HTML_COLORSTYLE_HUE    = 210
+HTML_COLORSTYLE_SAT    = 120
+HTML_COLORSTYLE_GAMMA  = 80
+
+HTML_INDEX_NUM_ENTRIES = 100
+ENUM_VALUES_PER_LINE   = 4
+
+#---------------------------------------------------------------------------
+# LaTeX output (disabled — not needed for rover project)
+#---------------------------------------------------------------------------
+
+GENERATE_LATEX         = NO
+
+#---------------------------------------------------------------------------
+# Other output formats (all disabled)
+#---------------------------------------------------------------------------
+
+GENERATE_RTF           = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+GENERATE_DOCBOOK       = NO
+GENERATE_AUTOGEN_DEF   = NO
+GENERATE_PERLMOD       = NO
+
+#---------------------------------------------------------------------------
+# Preprocessor — ESP-IDF macros
+#---------------------------------------------------------------------------
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+SEARCH_INCLUDES        = YES
+
+PREDEFINED             = \
+  CONFIG_IDF_TARGET_ESP32=1 \
+  ESP_LOGI(tag,fmt,...)= \
+  ESP_LOGE(tag,fmt,...)= \
+  ESP_LOGW(tag,fmt,...)= \
+  configUSE_FREERTOS=1
+
+SKIP_FUNCTION_MACROS   = YES
+
+#---------------------------------------------------------------------------
+# Dot / Graphviz — call graphs and dependency diagrams
+#---------------------------------------------------------------------------
+
+HAVE_DOT               = YES
+DOT_NUM_THREADS        = 0
+DOT_FONTNAME           = Helvetica
+DOT_FONTSIZE           = 10
+
+CLASS_DIAGRAMS         = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+GROUP_GRAPHS           = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+GRAPHICAL_HIERARCHY    = YES
+DIRECTORY_GRAPH        = YES
+
+DOT_IMAGE_FORMAT       = png
+DOT_GRAPH_MAX_NODES    = 80
+MAX_DOT_GRAPH_DEPTH    = 4
+DOT_TRANSPARENT        = NO
+DOT_CLEANUP            = YES
+GENERATE_LEGEND        = YES
+
+HIDE_UNDOC_RELATIONS   = NO
+
+#---------------------------------------------------------------------------
+# Misc
+#---------------------------------------------------------------------------
+
+ALPHABETICAL_INDEX     = YES
+SHOW_INCLUDE_FILES     = YES
+SHOW_USED_FILES        = YES
+SHOW_FILES             = YES
+SHOW_NAMESPACES        = YES
+INLINE_INFO            = YES
+CASE_SENSE_NAMES       = YES
+MAX_INITIALIZER_LINES  = 30
+NUM_PROC_THREADS       = 1
+LOOKUP_CACHE_SIZE      = 0
