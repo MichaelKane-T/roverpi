@@ -5,7 +5,7 @@ import numpy as np
 class SimpleVision:
     def __init__(self):
         pass
-
+0
     def analyze(self, frame):
         """
         Very lightweight placeholder logic.

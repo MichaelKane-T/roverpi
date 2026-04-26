@@ -8,32 +8,38 @@ Modes
   MANUAL : Dashboard/human control; if idle > IDLE_TIMEOUT_S → AUTO
 
 ESP32 UART protocol (Pi → ESP32):
-  FORWARD / BACKWARD / LEFT / RIGHT / STOP / PING / STATUS
+  FORWARD / BACKWARD / LEFT / RIGHT / STOP / PING / STATUS / FAULT_CLEAR
 
 ESP32 → Pi responses:
-  OK FORWARD / OK STOP / OBSTACLE STOP / ERR FAULT / PONG
-  STATUS dist=XX.X path=X drive=X fault=X
+  OK <CMD> / ERR FAULT / ERR UNKNOWN / OBSTACLE STOP
+  SCAN angle=<deg> dist=<cm>
+  STATUS dist=XX.X path=X dir=X fault=X
+  PONG
 """
 
 import time
 import threading
-import io
 
 from flask import Flask, Response, jsonify, request
+from flask_cors import CORS
 from picamera2 import Picamera2
 import cv2
 
 import pantilt
 import serial_comm
-from rover_env   import RoverEnv
-from rover_agent import RoverAgent
+from rover_env     import RoverEnv
+from rover_agent   import RoverAgent
 from occupancy_map import OccupancyMap
 
 # ── configuration ─────────────────────────────────────────────────────────────
-IDLE_TIMEOUT_S   = 30.0    # seconds of no manual input before AUTO resumes
-PING_INTERVAL_S  = 2.0     # heartbeat to ESP32
-AUTO_STEP_HZ     = 4       # actions per second in AUTO mode (≤ 1000/STEP_DELAY)
-FRAME_W, FRAME_H = 640, 480
+IDLE_TIMEOUT_S        = 30.0
+PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
+AUTO_STEP_HZ          = 4
+FRAME_W, FRAME_H      = 640, 480
+
+STARTUP_ESP32_TIMEOUT = 10.0   # seconds to wait for ESP32 READY
+STARTUP_SENSOR_CHECKS = 5      # number of valid (non -1.0) STATUS reads required
+STARTUP_SCAN_WAIT     = 2.0    # seconds to let initial scan complete
 
 # ── hardware init ─────────────────────────────────────────────────────────────
 picam2 = Picamera2()
@@ -54,11 +60,90 @@ occ_map = OccupancyMap()
 env     = RoverEnv(picam2, esp32)
 agent   = RoverAgent()
 
+# ── system ready gate ─────────────────────────────────────────────────────────
+# Auto loop will not send any motion commands until this is True.
+_system_ready = False
+_startup_log  = []
+
+def _startup_sequence():
+    """
+    Runs once in a background thread before auto loop is allowed to drive.
+      1. Send STOP immediately
+      2. Wait for ESP32 READY
+      3. Wait for valid sensor readings (dist > 0)
+      4. Centre camera
+      5. Trigger initial scan
+      6. Switch mode to AUTO and set _system_ready
+    """
+    global _system_ready
+
+    def log(msg):
+        print(f"[STARTUP] {msg}")
+        _startup_log.append(msg)
+
+    log("Startup sequence begun — motors held")
+    esp32.send("STOP")
+    time.sleep(0.2)
+
+    # 1. Wait for ESP32 READY
+    log("Waiting for ESP32 READY...")
+    deadline    = time.time() + STARTUP_ESP32_TIMEOUT
+    esp32_ready = False
+    while time.time() < deadline:
+        msg = esp32.get_latest_message()
+        if msg and "READY" in msg:
+            esp32_ready = True
+            break
+        esp32.send("PING")
+        time.sleep(0.3)
+    log("ESP32 READY confirmed" if esp32_ready else "WARNING: ESP32 READY not received")
+
+    # 2. Wait for valid sensor data
+    log("Waiting for valid sensor readings...")
+    valid_reads = 0
+    attempts    = 0
+    while valid_reads < STARTUP_SENSOR_CHECKS and attempts < 30:
+        esp32.send("STATUS")
+        time.sleep(0.4)
+        msg = esp32.get_latest_message()
+        if msg and "dist=" in msg:
+            try:
+                dist = float(msg.split("dist=")[1].split()[0])
+                if dist > 0:
+                    valid_reads += 1
+                    log(f"Valid read {valid_reads}/{STARTUP_SENSOR_CHECKS}: {dist:.1f}cm")
+                else:
+                    log(f"Sensor returning {dist:.1f} — waiting...")
+            except Exception:
+                pass
+        attempts += 1
+
+    sensor_ok = valid_reads >= STARTUP_SENSOR_CHECKS
+    if not sensor_ok:
+        log("WARNING: Sensor not validated — check HC-SR04 wiring")
+    else:
+        log("Sensor validated")
+
+    # 3. Centre camera
+    log("Centering camera...")
+    pantilt.center()
+    time.sleep(0.5)
+
+    # 4. Initial scan for map context
+    log("Running initial scan...")
+    esp32.send("SCAN")
+    time.sleep(STARTUP_SCAN_WAIT)
+
+    # 5. Done
+    _system_ready = sensor_ok
+    set_mode("AUTO")
+    log("Startup complete — AUTO mode active" if sensor_ok
+        else "Startup complete with warnings — sensor unhealthy, AUTO blocked")
+
 # ── mode state ────────────────────────────────────────────────────────────────
-# "AUTO" or "MANUAL"
-_mode      = "AUTO"
-_mode_lock = threading.Lock()
-_last_manual_input = 0.0   # epoch seconds of last dashboard command
+_mode              = "MANUAL"   # starts MANUAL — _startup_sequence sets AUTO
+_mode_lock         = threading.Lock()
+_last_manual_input = 0.0
 
 def get_mode():
     with _mode_lock:
@@ -75,48 +160,107 @@ def set_mode(new_mode: str):
             _last_manual_input = time.time()
             esp32.send("STOP")
         else:
-            # Reset env when re-entering AUTO
             env.reset()
 
 def touch_manual():
-    """Record that a manual command was just issued."""
     global _last_manual_input
     with _mode_lock:
         _last_manual_input = time.time()
 
+# ── stub telemetry ────────────────────────────────────────────────────────────
+# Replace read_battery_stub() body when INA219 / MAX17043 is wired to Pi I2C.
+def read_battery_stub() -> dict:
+    return {
+        "voltage":  None,
+        "percent":  None,
+        "charging": None,
+        "stub":     True,
+        "note":     "Battery monitor hardware not yet installed"
+    }
+
+# Replace read_gyro_stub() body when MPU6050 / ICM-42688 is wired to Pi I2C
+# or when the ESP32 streams IMU data over UART.
+def read_gyro_stub() -> dict:
+    return {
+        "roll":  None,
+        "pitch": None,
+        "yaw":   None,
+        "accel": {"x": None, "y": None, "z": None},
+        "stub":  True,
+        "note":  "IMU hardware not yet installed"
+    }
+
+# ── scan data store ───────────────────────────────────────────────────────────
+_scan_lock   = threading.Lock()
+_scan_latest = {}   # {angle_deg: dist_cm}
+
+def _parse_scan_messages():
+    """
+    Watches ESP32 message history for SCAN lines.
+    Feeds both the occupancy map and rover_env scan readings.
+    Uses get_history() so no message is ever missed.
+    """
+    seen = set()   # track already-processed messages by content+index
+    while True:
+        for msg in esp32.get_history():
+            if msg.startswith("SCAN") and msg not in seen:
+                seen.add(msg)
+                try:
+                    parts = msg.split()
+                    angle = int(parts[1].split("=")[1])
+                    dist  = float(parts[2].split("=")[1])
+                    with _scan_lock:
+                        _scan_latest[angle] = dist
+                    # Feed env so safe_action() has side distance data
+                    env.update_scan(angle, dist)
+                    # Feed occupancy map (angle relative to rover heading)
+                    occ_map.update_sweep({angle - 90: dist})
+                except Exception:
+                    pass
+        # Keep seen set from growing unbounded
+        if len(seen) > 200:
+            seen.clear()
+        time.sleep(0.05)
+
 # ── background threads ────────────────────────────────────────────────────────
 
 def _ping_loop():
-    """Sends PING to ESP32 every few seconds to keep heartbeat alive."""
     while True:
         esp32.send("PING")
         time.sleep(PING_INTERVAL_S)
 
-
 def _esp_listener_loop():
-    """Forwards ESP32 messages into the RL env."""
     while True:
         msg = esp32.get_latest_message()
         if msg:
             env.update_esp_message(msg)
         time.sleep(0.05)
 
+def _sensor_healthy() -> bool:
+    """Returns True if the latest ESP32 STATUS shows a valid distance."""
+    msg = esp32.get_latest_message()
+    if not msg or "dist=" not in msg:
+        return False
+    try:
+        dist = float(msg.split("dist=")[1].split()[0])
+        return dist > 0.0
+    except Exception:
+        return False
 
 def _auto_loop():
-    """
-    Main autonomous RL loop.
-    Runs at AUTO_STEP_HZ when in AUTO mode.
-    Also handles idle timeout: switches MANUAL → AUTO after inactivity.
-    """
+    # Wait until startup sequence has completed before doing anything
+    while not _system_ready:
+        time.sleep(0.5)
+
     obs  = env.reset()
     step = 0
 
     while True:
-        # ── idle timeout: MANUAL → AUTO ──────────────────────────────────
         with _mode_lock:
-            mode      = _mode
-            last_inp  = _last_manual_input
+            mode     = _mode
+            last_inp = _last_manual_input
 
+        # ── idle timeout: MANUAL → AUTO ──────────────────────────────
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
                 print("[Mode] Idle timeout — resuming AUTO")
@@ -125,35 +269,48 @@ def _auto_loop():
             time.sleep(0.5)
             continue
 
-        # ── AUTO: RL step ─────────────────────────────────────────────────
-        action          = agent.select_action(obs)
-        next_obs, reward, _, info = env.step(action)
+        # ── sensor health gate ────────────────────────────────────────
+        # Don't drive if sensor is returning -1.0 — would cause thrashing
+        if not _sensor_healthy():
+            print("[AUTO] Sensor unhealthy (dist=-1.0) — holding, requesting STATUS")
+            esp32.send("STATUS")
+            esp32.send("STOP")
+            time.sleep(1.0)
+            continue
 
+        # ── RL step ───────────────────────────────────────────────────
+        action = agent.select_action(obs)
+        next_obs, reward, _, info = env.step(action)
         agent.store(obs, action, reward, next_obs)
         occ_map.move(action)
 
-        # request STATUS from ESP32 every 5 steps to update distance
         if step % 5 == 0:
             esp32.send("STATUS")
 
         obs   = next_obs
         step += 1
 
-        # epsilon decay every episode-equivalent (100 steps)
         if step % 100 == 0:
             agent.decay_epsilon()
 
         time.sleep(1.0 / AUTO_STEP_HZ)
 
-
-# Start background threads
-threading.Thread(target=_ping_loop,         daemon=True).start()
-threading.Thread(target=_esp_listener_loop, daemon=True).start()
-threading.Thread(target=_auto_loop,         daemon=True).start()
+threading.Thread(target=_startup_sequence,    daemon=True).start()
+threading.Thread(target=_ping_loop,           daemon=True).start()
+threading.Thread(target=_esp_listener_loop,   daemon=True).start()
+threading.Thread(target=_auto_loop,           daemon=True).start()
+threading.Thread(target=_parse_scan_messages, daemon=True).start()
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
+# CORS — Express on the webserver proxies all /rover/* calls.
+# Origins locked to your domain; loosen to "*" only for local testing.
+CORS(app, resources={r"/*": {"origins": [
+    "https://home.codescripting.com",
+    "http://192.168.1.185",        # webserver LAN IP
+    "http://localhost:5173",        # Vite dev server
+]}})
 
 def _generate_video():
     while True:
@@ -168,130 +325,7 @@ def _generate_video():
             )
         time.sleep(0.05)
 
-
-# ── routes: dashboard ─────────────────────────────────────────────────────────
-
-@app.route("/")
-def index():
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>RoverPi</title>
-      <style>
-        body  { font-family: monospace; background:#111; color:#eee; padding:20px; }
-        h1,h2 { color:#4af; }
-        button {
-          padding:10px 20px; margin:4px; font-size:14px;
-          background:#222; color:#eee; border:1px solid #4af;
-          border-radius:4px; cursor:pointer;
-        }
-        button:hover  { background:#4af; color:#000; }
-        button.danger { border-color:#f44; }
-        button.danger:hover { background:#f44; }
-        button.active { background:#4af; color:#000; }
-        #status { background:#1a1a1a; padding:12px; border-radius:4px;
-                  border:1px solid #333; min-height:80px; }
-        .row { display:flex; gap:20px; flex-wrap:wrap; }
-        .panel { background:#1a1a1a; padding:16px; border-radius:6px;
-                 border:1px solid #333; }
-        #mode-badge {
-          display:inline-block; padding:4px 12px; border-radius:12px;
-          font-weight:bold; margin-left:12px;
-        }
-        .auto   { background:#2a4; color:#fff; }
-        .manual { background:#a42; color:#fff; }
-      </style>
-    </head>
-    <body>
-      <h1>RoverPi Dashboard
-        <span id="mode-badge" class="auto">AUTO</span>
-      </h1>
-
-      <div class="row">
-
-        <div class="panel">
-          <h2>Camera</h2>
-          <img src="/video" width="480" style="border:1px solid #333"/>
-        </div>
-
-        <div class="panel">
-          <h2>Occupancy Map</h2>
-          <img id="map-img" src="/map" width="300"
-               style="border:1px solid #333; image-rendering:pixelated"/>
-        </div>
-
-      </div>
-
-      <div class="row" style="margin-top:16px">
-
-        <div class="panel">
-          <h2>Mode Control</h2>
-          <button onclick="setMode('AUTO')"   id="btn-auto">🤖 Auto</button>
-          <button onclick="setMode('MANUAL')" id="btn-manual">🕹 Manual</button>
-        </div>
-
-        <div class="panel">
-          <h2>Manual Drive</h2>
-          <div style="display:grid;grid-template-columns:repeat(3,80px);gap:4px">
-            <div></div>
-            <button onclick="cmd('forward')">▲</button>
-            <div></div>
-            <button onclick="cmd('left')">◄</button>
-            <button onclick="cmd('stop')" class="danger">■</button>
-            <button onclick="cmd('right')">►</button>
-            <div></div>
-            <button onclick="cmd('backward')">▼</button>
-            <div></div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h2>Camera Pan/Tilt</h2>
-          <button onclick="cam('left')">◄</button>
-          <button onclick="cam('right')">►</button>
-          <button onclick="cam('up')">▲</button>
-          <button onclick="cam('down')">▼</button>
-          <button onclick="cam('center')">⊙ Center</button>
-        </div>
-
-      </div>
-
-      <div class="panel" style="margin-top:16px">
-        <h2>Status</h2>
-        <pre id="status">Loading...</pre>
-      </div>
-
-      <script>
-        async function cmd(c) {
-          await fetch('/cmd/' + c);
-        }
-        async function cam(d) {
-          await fetch('/cam/' + d);
-        }
-        async function setMode(m) {
-          await fetch('/mode/' + m.toLowerCase());
-        }
-
-        setInterval(async () => {
-          const res  = await fetch('/status');
-          const data = await res.json();
-          document.getElementById('status').textContent =
-            JSON.stringify(data, null, 2);
-          const badge = document.getElementById('mode-badge');
-          badge.textContent = data.mode;
-          badge.className   = data.mode === 'AUTO' ? 'auto' : 'manual';
-          // refresh map
-          document.getElementById('map-img').src =
-            '/map?t=' + Date.now();
-        }, 500);
-      </script>
-    </body>
-    </html>
-    """
-
-
-# ── routes: video + map ───────────────────────────────────────────────────────
+# ── video + map ───────────────────────────────────────────────────────────────
 
 @app.route("/video")
 def video():
@@ -300,19 +334,21 @@ def video():
         mimetype="multipart/x-mixed-replace; boundary=frame"
     )
 
-
 @app.route("/map")
 def map_image():
     jpg = occ_map.render(cell_px=10)
     return Response(jpg, mimetype="image/jpeg")
 
-
-# ── routes: status ────────────────────────────────────────────────────────────
+# ── status ────────────────────────────────────────────────────────────────────
 
 @app.route("/status")
 def status():
+    with _scan_lock:
+        scan = dict(_scan_latest)
     return jsonify({
         "mode":          get_mode(),
+        "system_ready":  _system_ready,
+        "startup_log":   _startup_log[-5:],   # last 5 startup messages
         "epsilon":       round(agent.epsilon, 3),
         "agent_steps":   agent.steps,
         "buffer_size":   len(agent.buffer),
@@ -321,10 +357,24 @@ def status():
         "esp32_msg":     esp32.get_latest_message(),
         "pan_angle":     pantilt.pan_angle,
         "tilt_angle":    pantilt.tilt_angle,
+        "scan":          scan,
     })
 
+# ── battery ───────────────────────────────────────────────────────────────────
 
-# ── routes: mode ──────────────────────────────────────────────────────────────
+@app.route("/battery")
+def battery():
+    # Swap read_battery_stub() for real INA219/MAX17043 reads when wired
+    return jsonify(read_battery_stub())
+
+# ── gyro ──────────────────────────────────────────────────────────────────────
+
+@app.route("/gyro")
+def gyro():
+    # Swap read_gyro_stub() for real MPU6050/ICM reads when wired
+    return jsonify(read_gyro_stub())
+
+# ── mode ──────────────────────────────────────────────────────────────────────
 
 @app.route("/mode/<m>")
 def mode_switch(m):
@@ -334,52 +384,54 @@ def mode_switch(m):
     set_mode(m)
     return jsonify({"mode": get_mode()})
 
-
-# ── routes: manual commands ───────────────────────────────────────────────────
+# ── commands ──────────────────────────────────────────────────────────────────
 
 @app.route("/cmd/<cmd>")
 def send_cmd(cmd):
-    allowed = {"forward", "backward", "left", "right", "stop"}
-    if cmd not in allowed:
+    allowed = {
+        "forward", "backward", "left", "right", "stop",
+        "scan", "return", "hold", "lights", "fault_clear"
+    }
+    if cmd.lower() not in allowed:
         return jsonify({"error": "invalid command"}), 400
-
-    # switch to MANUAL and reset idle timer
     set_mode("MANUAL")
     touch_manual()
-
     esp32.send(cmd.upper())
     return jsonify({"sent": cmd.upper(), "esp32": esp32.get_latest_message()})
 
+# ── camera pan/tilt ───────────────────────────────────────────────────────────
 
-# ── routes: camera pan/tilt ───────────────────────────────────────────────────
-
-@app.route("/cam/left")
-def cam_left():
-    pantilt.pan_left()
-    return jsonify({"pan": pantilt.pan_angle})
-
-@app.route("/cam/right")
-def cam_right():
-    pantilt.pan_right()
-    return jsonify({"pan": pantilt.pan_angle})
-
-@app.route("/cam/up")
-def cam_up():
-    pantilt.tilt_up()
-    return jsonify({"tilt": pantilt.tilt_angle})
-
-@app.route("/cam/down")
-def cam_down():
-    pantilt.tilt_down()
-    return jsonify({"tilt": pantilt.tilt_angle})
-
-@app.route("/cam/center")
-def cam_center():
-    pantilt.center()
+@app.route("/cam/<direction>")
+def cam_control(direction):
+    actions = {
+        "left":   pantilt.pan_left,
+        "right":  pantilt.pan_right,
+        "up":     pantilt.tilt_up,
+        "down":   pantilt.tilt_down,
+        "center": pantilt.center,
+    }
+    if direction not in actions:
+        return jsonify({"error": "invalid direction"}), 400
+    actions[direction]()
     return jsonify({"pan": pantilt.pan_angle, "tilt": pantilt.tilt_angle})
 
+@app.route("/cam/pan/<int:angle>")
+def cam_pan_absolute(angle):
+    """Absolute pan angle for slider control (0–180)."""
+    angle = max(0, min(180, angle))
+    pantilt.set_angle(pantilt.PAN, angle)
+    pantilt.pan_angle = angle
+    return jsonify({"pan": pantilt.pan_angle})
 
-# ── routes: auto control ──────────────────────────────────────────────────────
+@app.route("/cam/tilt/<int:angle>")
+def cam_tilt_absolute(angle):
+    """Absolute tilt angle for slider control (15–145)."""
+    angle = max(15, min(145, angle))
+    pantilt.set_angle(pantilt.TILT, angle)
+    pantilt.tilt_angle = angle
+    return jsonify({"tilt": pantilt.tilt_angle})
+
+# ── auto control ──────────────────────────────────────────────────────────────
 
 @app.route("/auto/start")
 def auto_start():
@@ -392,32 +444,13 @@ def auto_stop():
     esp32.send("STOP")
     return jsonify({"mode": "MANUAL"})
 
+# ── health ────────────────────────────────────────────────────────────────────
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "host": "roverpi"})
 
 # ── entry point ───────────────────────────────────────────────────────────────
-
-@app.route("/cam/pan_to")
-def cam_pan_to():
-    try:
-        angle = int(request.args.get("angle", 90))
-        angle = max(0, min(180, angle))
-        pantilt.set_angle(pantilt.PAN, angle)
-        pantilt.pan_angle = angle
-    except (ValueError, TypeError):
-        return jsonify({"error": "invalid angle"}), 400
-    return jsonify({"pan": pantilt.pan_angle})
- 
- 
-@app.route("/cam/tilt_to")
-def cam_tilt_to():
-    try:
-        angle = int(request.args.get("angle", 90))
-        angle = max(15, min(145, angle))
-        pantilt.set_angle(pantilt.TILT, angle)
-        pantilt.tilt_angle = angle
-    except (ValueError, TypeError):
-        return jsonify({"error": "invalid angle"}), 400
-    return jsonify({"tilt": pantilt.tilt_angle})
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
