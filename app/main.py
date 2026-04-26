@@ -326,6 +326,177 @@ def _generate_video():
             )
         time.sleep(0.05)
 
+# ── local dashboard ───────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return """<!DOCTYPE html>
+<html>
+<head>
+  <title>RoverPi Local</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #05070b; font-family: monospace; color: #cbd5e1; padding: 16px; }
+    h1 { color: #67e8f9; font-size: 18px; letter-spacing: .2em; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 900px; }
+    .panel { border: 1px solid rgba(34,211,238,.15); background: rgba(8,16,24,.9);
+             border-radius: 12px; padding: 12px; }
+    .panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .25em;
+                color: rgba(103,232,249,.7); margin-bottom: 10px; }
+    img { width: 100%; border-radius: 8px; background: #02050a; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    button { border: 1px solid rgba(56,189,248,.3); background: rgba(56,189,248,.06);
+             border-radius: 8px; padding: 8px 14px; font-size: 11px; font-weight: 800;
+             letter-spacing: .14em; color: #7dd3fc; cursor: pointer; font-family: monospace; }
+    button:hover { background: rgba(56,189,248,.18); }
+    button.danger { border-color: rgba(248,113,113,.35); color: #fca5a5;
+                    background: rgba(248,113,113,.08); }
+    button.mode-active { background: rgba(34,211,238,.2); color: #a5f3fc; }
+    .stat { display: flex; justify-content: space-between; padding: 5px 8px;
+            background: rgba(255,255,255,.03); border-radius: 6px; margin-top: 4px;
+            font-size: 11px; }
+    .stat span:last-child { color: #67e8f9; font-weight: 700; }
+    #log { height: 160px; overflow-y: auto; background: rgba(0,0,0,.3);
+           border-radius: 8px; padding: 8px; font-size: 10px; margin-top: 6px; }
+    .log-line { border-bottom: 1px solid rgba(255,255,255,.04); padding: 2px 0; color: #94a3b8; }
+    .log-ok { color: #34d399; } .log-err { color: #f87171; }
+    input[type=range] { width: 100%; accent-color: #38bdf8; margin: 4px 0; }
+    .slider-row { font-size: 10px; color: #475569; display: flex;
+                  justify-content: space-between; margin-bottom: 2px; }
+    #online { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+              background: #f87171; margin-right: 6px; }
+    #online.up { background: #34d399; box-shadow: 0 0 6px #34d399; }
+  </style>
+</head>
+<body>
+  <h1><span id="online"></span>ROVERPI LOCAL DASHBOARD</h1>
+  <div class="grid">
+
+    <div class="panel" style="grid-column:1/-1">
+      <h2>Camera Feed</h2>
+      <img src="/video" />
+    </div>
+
+    <div class="panel">
+      <h2>Mode</h2>
+      <div class="btn-row">
+        <button id="btn-auto"   onclick="setMode('AUTO')">AUTO</button>
+        <button id="btn-manual" onclick="setMode('MANUAL')">MANUAL</button>
+      </div>
+      <h2 style="margin-top:12px">Drive</h2>
+      <div class="btn-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px">
+        <div></div>
+        <button onclick="cmd('forward')">▲ FWD</button>
+        <div></div>
+        <button onclick="cmd('left')">◄ LEFT</button>
+        <button class="danger" onclick="cmd('stop')">■ STOP</button>
+        <button onclick="cmd('right')">RIGHT ►</button>
+        <div></div>
+        <button onclick="cmd('backward')">▼ BACK</button>
+        <div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Gimbal</h2>
+      <div class="slider-row"><span>Pan</span><span id="pan-v">90°</span></div>
+      <input type="range" min="0" max="180" value="90" id="pan"
+             oninput="document.getElementById('pan-v').textContent=this.value+'°'"
+             onchange="fetch('/cam/pan/'+this.value)">
+      <div class="slider-row" style="margin-top:8px"><span>Tilt</span><span id="tilt-v">90°</span></div>
+      <input type="range" min="15" max="145" value="90" id="tilt"
+             style="accent-color:#fbbf24"
+             oninput="document.getElementById('tilt-v').textContent=this.value+'°'"
+             onchange="fetch('/cam/tilt/'+this.value)">
+      <div class="btn-row" style="margin-top:8px">
+        <button onclick="fetch('/cam/center');document.getElementById('pan').value=90;
+                         document.getElementById('tilt').value=90;
+                         document.getElementById('pan-v').textContent='90°';
+                         document.getElementById('tilt-v').textContent='90°'">
+          ⊙ Center
+        </button>
+        <button onclick="fetch('/cmd/scan')">Scan</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Telemetry</h2>
+      <div class="stat"><span>Distance</span><span id="t-dist">—</span></div>
+      <div class="stat"><span>Path</span><span id="t-path">—</span></div>
+      <div class="stat"><span>Mode</span><span id="t-mode">—</span></div>
+      <div class="stat"><span>System Ready</span><span id="t-ready">—</span></div>
+      <div class="stat"><span>Agent Steps</span><span id="t-steps">—</span></div>
+      <div class="stat"><span>Epsilon</span><span id="t-eps">—</span></div>
+      <div class="stat"><span>ESP32</span><span id="t-esp" style="font-size:9px;max-width:160px;overflow:hidden;text-overflow:ellipsis">—</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Occupancy Map</h2>
+      <img id="map-img" src="/map" style="image-rendering:pixelated"/>
+    </div>
+
+    <div class="panel" style="grid-column:1/-1">
+      <h2>Event Log</h2>
+      <div id="log"></div>
+    </div>
+
+  </div>
+
+  <script>
+    const log = document.getElementById('log');
+    function addLog(msg, ok=true) {
+      const d = document.createElement('div');
+      d.className = 'log-line';
+      d.innerHTML = '<span class="'+(ok?'log-ok':'log-err')+'">'+
+        new Date().toLocaleTimeString()+'</span> '+msg;
+      log.prepend(d);
+      if (log.children.length > 60) log.lastChild.remove();
+    }
+
+    async function cmd(c) {
+      const r = await fetch('/cmd/'+c);
+      const d = await r.json();
+      addLog('CMD '+c.toUpperCase()+' → '+d.esp32, r.ok);
+    }
+
+    async function setMode(m) {
+      const url = m === 'AUTO' ? '/auto/start' : '/auto/stop';
+      await fetch(url);
+      addLog('Mode → '+m);
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch('/status');
+        const d = await r.json();
+        document.getElementById('online').className = 'up';
+        document.getElementById('t-dist').textContent =
+          d.esp32_msg && d.esp32_msg.includes('dist=')
+            ? d.esp32_msg.split('dist=')[1].split(' ')[0]+'cm' : '—';
+        document.getElementById('t-path').textContent =
+          d.esp32_msg && d.esp32_msg.includes('path=1') ? 'CLEAR' : 'BLOCKED';
+        document.getElementById('t-mode').textContent   = d.mode;
+        document.getElementById('t-ready').textContent  = d.system_ready ? 'YES' : 'NO';
+        document.getElementById('t-steps').textContent  = d.agent_steps;
+        document.getElementById('t-eps').textContent    = d.epsilon;
+        document.getElementById('t-esp').textContent    = d.esp32_msg || '—';
+        document.getElementById('btn-auto').className   =
+          d.mode === 'AUTO' ? 'mode-active' : '';
+        document.getElementById('btn-manual').className =
+          d.mode === 'MANUAL' ? 'mode-active' : '';
+        document.getElementById('map-img').src = '/map?t='+Date.now();
+      } catch(e) {
+        document.getElementById('online').className = '';
+      }
+    }
+
+    setInterval(poll, 800);
+    poll();
+    addLog('Local dashboard loaded');
+  </script>
+</body>
+</html>"""
+
 # ── video + map ───────────────────────────────────────────────────────────────
 
 @app.route("/video")
