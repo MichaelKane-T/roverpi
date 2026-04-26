@@ -56,6 +56,7 @@ void serial_uart_init(void)
              UART_PORT, UART_TX_PIN, UART_RX_PIN, UART_BAUD_RATE);
 }
 
+// Returns number of bytes sent, or -1 on error.
 int serial_uart_send(const char *data, size_t len)
 {
     if (data == NULL || len == 0) {
@@ -71,6 +72,7 @@ int serial_uart_send(const char *data, size_t len)
     return bytes_written;
 }
 
+// Convenience function to send a null-terminated string followed by newline.
 int serial_uart_send_line(const char *line)
 {
     if (line == NULL) {
@@ -83,6 +85,7 @@ int serial_uart_send_line(const char *line)
     return written;
 }
 
+// Returns number of bytes read, or -1 on error.
 int serial_uart_receive(char *buffer, size_t max_len)
 {
     if (buffer == NULL || max_len < 2) {

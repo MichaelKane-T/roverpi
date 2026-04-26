@@ -180,6 +180,7 @@ float distance_sensor_get_distance_cm(void)
     return distance_cm;
 }
 
+// Returns true if an obstacle is detected within threshold_cm, false otherwise.
 bool distance_sensor_obstacle_detected(float threshold_cm)
 {
     float distance_cm = distance_sensor_get_distance_cm();
