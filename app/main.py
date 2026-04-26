@@ -21,7 +21,6 @@ import time
 import threading
 
 from flask import Flask, Response, jsonify, request
-from flask_cors import CORS
 from picamera2 import Picamera2
 import cv2
 
@@ -303,14 +302,6 @@ threading.Thread(target=_parse_scan_messages, daemon=True).start()
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-
-# CORS — Express on the webserver proxies all /rover/* calls.
-# Origins locked to your domain; loosen to "*" only for local testing.
-CORS(app, resources={r"/*": {"origins": [
-    "https://home.codescripting.com",
-    "http://192.168.1.185",        # webserver LAN IP
-    "http://localhost:5173",        # Vite dev server
-]}})
 
 def _generate_video():
     while True:
