@@ -8,62 +8,61 @@ Modes
   MANUAL : Dashboard/human control; if idle > IDLE_TIMEOUT_S → AUTO
 
 ESP32 UART protocol (Pi → ESP32):
-  FORWARD / BACKWARD / LEFT / RIGHT / STOP / PING / STATUS / FAULT_CLEAR
+  FORWARD / BACKWARD / LEFT / RIGHT / STOP / PING / STATUS
 
 ESP32 → Pi responses:
-  OK <CMD> / ERR FAULT / ERR UNKNOWN / OBSTACLE STOP
-  SCAN angle=<deg> dist=<cm>
-  STATUS dist=XX.X path=X dir=X fault=X
-  PONG
+  OK FORWARD / OK STOP / OBSTACLE STOP / ERR FAULT / PONG
+  STATUS dist=XX.X path=X drive=X fault=X
 """
 
 import time
 import threading
-
+ 
 from flask import Flask, Response, jsonify, request
+from flask_cors import CORS
 from picamera2 import Picamera2
 import cv2
-
+ 
 import pantilt
 import serial_comm
 from rover_env     import RoverEnv
 from rover_agent   import RoverAgent
 from occupancy_map import OccupancyMap
-
+ 
 # ── configuration ─────────────────────────────────────────────────────────────
 IDLE_TIMEOUT_S        = 30.0
 PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
 AUTO_STEP_HZ          = 4
 FRAME_W, FRAME_H      = 640, 480
-
+ 
 STARTUP_ESP32_TIMEOUT = 10.0   # seconds to wait for ESP32 READY
 STARTUP_SENSOR_CHECKS = 5      # number of valid (non -1.0) STATUS reads required
 STARTUP_SCAN_WAIT     = 2.0    # seconds to let initial scan complete
-
+ 
 # ── hardware init ─────────────────────────────────────────────────────────────
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(
     main={"size": (FRAME_W, FRAME_H), "format": "RGB888"}
 ))
 picam2.start()
-
+ 
 pantilt.init()
-
+ 
 esp32 = serial_comm.ESP32Serial()
 esp32.connect()
 esp32.start_reader()
 time.sleep(1)
-
+ 
 # ── ML components ─────────────────────────────────────────────────────────────
 occ_map = OccupancyMap()
 env     = RoverEnv(picam2, esp32)
 agent   = RoverAgent()
-
+ 
 # ── system ready gate ─────────────────────────────────────────────────────────
 # Auto loop will not send any motion commands until this is True.
 _system_ready = False
 _startup_log  = []
-
+ 
 def _startup_sequence():
     """
     Runs once in a background thread before auto loop is allowed to drive.
@@ -75,15 +74,15 @@ def _startup_sequence():
       6. Switch mode to AUTO and set _system_ready
     """
     global _system_ready
-
+ 
     def log(msg):
         print(f"[STARTUP] {msg}")
         _startup_log.append(msg)
-
+ 
     log("Startup sequence begun — motors held")
     esp32.send("STOP")
     time.sleep(0.2)
-
+ 
     # 1. Wait for ESP32 READY
     log("Waiting for ESP32 READY...")
     deadline    = time.time() + STARTUP_ESP32_TIMEOUT
@@ -96,7 +95,7 @@ def _startup_sequence():
         esp32.send("PING")
         time.sleep(0.3)
     log("ESP32 READY confirmed" if esp32_ready else "WARNING: ESP32 READY not received")
-
+ 
     # 2. Wait for valid sensor data
     log("Waiting for valid sensor readings...")
     valid_reads = 0
@@ -116,38 +115,42 @@ def _startup_sequence():
             except Exception:
                 pass
         attempts += 1
-
+ 
     sensor_ok = valid_reads >= STARTUP_SENSOR_CHECKS
     if not sensor_ok:
         log("WARNING: Sensor not validated — check HC-SR04 wiring")
     else:
         log("Sensor validated")
-
+ 
     # 3. Centre camera
     log("Centering camera...")
     pantilt.center()
     time.sleep(0.5)
-
+ 
     # 4. Initial scan for map context
     log("Running initial scan...")
     esp32.send("SCAN")
     time.sleep(STARTUP_SCAN_WAIT)
-
+ 
     # 5. Done
-    _system_ready = sensor_ok
-    set_mode("AUTO")
+    if sensor_ok:
+        _system_ready = True
+        set_mode("AUTO")
+    else:
+        _system_ready = False
+        set_mode("MANUAL")
     log("Startup complete — AUTO mode active" if sensor_ok
         else "Startup complete with warnings — sensor unhealthy, AUTO blocked")
-
+ 
 # ── mode state ────────────────────────────────────────────────────────────────
 _mode              = "MANUAL"   # starts MANUAL — _startup_sequence sets AUTO
 _mode_lock         = threading.Lock()
 _last_manual_input = 0.0
-
+ 
 def get_mode():
     with _mode_lock:
         return _mode
-
+ 
 def set_mode(new_mode: str):
     global _mode, _last_manual_input
     with _mode_lock:
@@ -160,12 +163,12 @@ def set_mode(new_mode: str):
             esp32.send("STOP")
         else:
             env.reset()
-
+ 
 def touch_manual():
     global _last_manual_input
     with _mode_lock:
         _last_manual_input = time.time()
-
+ 
 # ── stub telemetry ────────────────────────────────────────────────────────────
 # Replace read_battery_stub() body when INA219 / MAX17043 is wired to Pi I2C.
 def read_battery_stub() -> dict:
@@ -176,7 +179,7 @@ def read_battery_stub() -> dict:
         "stub":     True,
         "note":     "Battery monitor hardware not yet installed"
     }
-
+ 
 # Replace read_gyro_stub() body when MPU6050 / ICM-42688 is wired to Pi I2C
 # or when the ESP32 streams IMU data over UART.
 def read_gyro_stub() -> dict:
@@ -188,53 +191,41 @@ def read_gyro_stub() -> dict:
         "stub":  True,
         "note":  "IMU hardware not yet installed"
     }
-
+ 
 # ── scan data store ───────────────────────────────────────────────────────────
 _scan_lock   = threading.Lock()
 _scan_latest = {}   # {angle_deg: dist_cm}
-
+ 
 def _parse_scan_messages():
-    """
-    Watches ESP32 message history for SCAN lines.
-    Feeds both the occupancy map and rover_env scan readings.
-    Uses get_history() so no message is ever missed.
-    """
-    seen = set()   # track already-processed messages by content+index
+    """Watches ESP32 messages for SCAN lines and feeds the occupancy map."""
     while True:
-        for msg in esp32.get_history():
-            if msg.startswith("SCAN") and msg not in seen:
-                seen.add(msg)
-                try:
-                    parts = msg.split()
-                    angle = int(parts[1].split("=")[1])
-                    dist  = float(parts[2].split("=")[1])
-                    with _scan_lock:
-                        _scan_latest[angle] = dist
-                    # Feed env so safe_action() has side distance data
-                    env.update_scan(angle, dist)
-                    # Feed occupancy map (angle relative to rover heading)
-                    occ_map.update_sweep({angle - 90: dist})
-                except Exception:
-                    pass
-        # Keep seen set from growing unbounded
-        if len(seen) > 200:
-            seen.clear()
+        msg = esp32.get_latest_message()
+        if msg and msg.startswith("SCAN"):
+            try:
+                parts = msg.split()
+                angle = int(parts[1].split("=")[1])
+                dist  = float(parts[2].split("=")[1])
+                with _scan_lock:
+                    _scan_latest[angle] = dist
+                occ_map.update_sweep({angle - 90: dist})
+            except Exception:
+                pass
         time.sleep(0.05)
-
+ 
 # ── background threads ────────────────────────────────────────────────────────
-
+ 
 def _ping_loop():
     while True:
         esp32.send("PING")
         time.sleep(PING_INTERVAL_S)
-
+ 
 def _esp_listener_loop():
     while True:
         msg = esp32.get_latest_message()
         if msg:
             env.update_esp_message(msg)
         time.sleep(0.05)
-
+ 
 def _sensor_healthy() -> bool:
     """Returns True if the latest ESP32 STATUS shows a valid distance."""
     msg = esp32.get_latest_message()
@@ -245,20 +236,20 @@ def _sensor_healthy() -> bool:
         return dist > 0.0
     except Exception:
         return False
-
+ 
 def _auto_loop():
     # Wait until startup sequence has completed before doing anything
     while not _system_ready:
         time.sleep(0.5)
-
+ 
     obs  = env.reset()
     step = 0
-
+ 
     while True:
         with _mode_lock:
             mode     = _mode
             last_inp = _last_manual_input
-
+ 
         # ── idle timeout: MANUAL → AUTO ──────────────────────────────
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
@@ -267,7 +258,7 @@ def _auto_loop():
                 obs = env.reset()
             time.sleep(0.5)
             continue
-
+ 
         # ── sensor health gate ────────────────────────────────────────
         # Don't drive if sensor is returning -1.0 — would cause thrashing
         if not _sensor_healthy():
@@ -276,33 +267,41 @@ def _auto_loop():
             esp32.send("STOP")
             time.sleep(1.0)
             continue
-
+ 
         # ── RL step ───────────────────────────────────────────────────
         action = agent.select_action(obs)
         next_obs, reward, _, info = env.step(action)
         agent.store(obs, action, reward, next_obs)
         occ_map.move(action)
-
+ 
         if step % 5 == 0:
             esp32.send("STATUS")
-
+ 
         obs   = next_obs
         step += 1
-
+ 
         if step % 100 == 0:
             agent.decay_epsilon()
-
+ 
         time.sleep(1.0 / AUTO_STEP_HZ)
-
+ 
 threading.Thread(target=_startup_sequence,    daemon=True).start()
 threading.Thread(target=_ping_loop,           daemon=True).start()
 threading.Thread(target=_esp_listener_loop,   daemon=True).start()
 threading.Thread(target=_auto_loop,           daemon=True).start()
 threading.Thread(target=_parse_scan_messages, daemon=True).start()
-
+ 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-
+ 
+# CORS — Express on the webserver proxies all /rover/* calls.
+# Origins locked to your domain; loosen to "*" only for local testing.
+CORS(app, resources={r"/*": {"origins": [
+    "https://home.codescripting.com",
+    "http://192.168.1.185",        # webserver LAN IP
+    "http://localhost:5173",        # Vite dev server
+]}})
+ 
 def _generate_video():
     while True:
         frame = picam2.capture_array()
@@ -315,23 +314,23 @@ def _generate_video():
                 + b"\r\n"
             )
         time.sleep(0.05)
-
+ 
 # ── video + map ───────────────────────────────────────────────────────────────
-
+ 
 @app.route("/video")
 def video():
     return Response(
         _generate_video(),
         mimetype="multipart/x-mixed-replace; boundary=frame"
     )
-
+ 
 @app.route("/map")
 def map_image():
     jpg = occ_map.render(cell_px=10)
     return Response(jpg, mimetype="image/jpeg")
-
+ 
 # ── status ────────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/status")
 def status():
     with _scan_lock:
@@ -350,23 +349,23 @@ def status():
         "tilt_angle":    pantilt.tilt_angle,
         "scan":          scan,
     })
-
+ 
 # ── battery ───────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/battery")
 def battery():
     # Swap read_battery_stub() for real INA219/MAX17043 reads when wired
     return jsonify(read_battery_stub())
-
+ 
 # ── gyro ──────────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/gyro")
 def gyro():
     # Swap read_gyro_stub() for real MPU6050/ICM reads when wired
     return jsonify(read_gyro_stub())
-
+ 
 # ── mode ──────────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/mode/<m>")
 def mode_switch(m):
     m = m.upper()
@@ -374,9 +373,9 @@ def mode_switch(m):
         return jsonify({"error": "invalid mode"}), 400
     set_mode(m)
     return jsonify({"mode": get_mode()})
-
+ 
 # ── commands ──────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/cmd/<cmd>")
 def send_cmd(cmd):
     allowed = {
@@ -389,9 +388,9 @@ def send_cmd(cmd):
     touch_manual()
     esp32.send(cmd.upper())
     return jsonify({"sent": cmd.upper(), "esp32": esp32.get_latest_message()})
-
+ 
 # ── camera pan/tilt ───────────────────────────────────────────────────────────
-
+ 
 @app.route("/cam/<direction>")
 def cam_control(direction):
     actions = {
@@ -405,7 +404,7 @@ def cam_control(direction):
         return jsonify({"error": "invalid direction"}), 400
     actions[direction]()
     return jsonify({"pan": pantilt.pan_angle, "tilt": pantilt.tilt_angle})
-
+ 
 @app.route("/cam/pan/<int:angle>")
 def cam_pan_absolute(angle):
     """Absolute pan angle for slider control (0–180)."""
@@ -413,7 +412,7 @@ def cam_pan_absolute(angle):
     pantilt.set_angle(pantilt.PAN, angle)
     pantilt.pan_angle = angle
     return jsonify({"pan": pantilt.pan_angle})
-
+ 
 @app.route("/cam/tilt/<int:angle>")
 def cam_tilt_absolute(angle):
     """Absolute tilt angle for slider control (15–145)."""
@@ -421,27 +420,28 @@ def cam_tilt_absolute(angle):
     pantilt.set_angle(pantilt.TILT, angle)
     pantilt.tilt_angle = angle
     return jsonify({"tilt": pantilt.tilt_angle})
-
+ 
 # ── auto control ──────────────────────────────────────────────────────────────
-
+ 
 @app.route("/auto/start")
 def auto_start():
     set_mode("AUTO")
     return jsonify({"mode": "AUTO"})
-
+ 
 @app.route("/auto/stop")
 def auto_stop():
     set_mode("MANUAL")
     esp32.send("STOP")
     return jsonify({"mode": "MANUAL"})
-
+ 
 # ── health ────────────────────────────────────────────────────────────────────
-
+ 
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "host": "roverpi"})
-
+ 
 # ── entry point ───────────────────────────────────────────────────────────────
-
+ 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+ 
