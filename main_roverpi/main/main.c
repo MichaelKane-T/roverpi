@@ -5,9 +5,9 @@
  * Description:
  *   Main application entry point for RoverPi ESP32 controller.
  ******************************************************************************/
-
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,21 +17,17 @@
 #include "motor_control.h"
 #include "distance_sensor.h"
 #include "roverpi_fsm.h"
+#include "serial_uart.h"
 
 static const char *TAG = "ROVERPI_MAIN";
 
-/* ---------------- Task Timing ---------------- */
-
 #define FSM_TASK_PERIOD_MS      50
-#define SENSOR_TASK_PERIOD_MS   1000
-
-/* ---------------- Shared State ---------------- */
+#define SENSOR_TASK_PERIOD_MS   100
+#define UART_TASK_PERIOD_MS     10
 
 static volatile bool path_clear = false;
-static volatile bool drive_cmd = true;          // temporary test command
+static volatile bool drive_cmd = false;     // Pi will set this later
 static volatile bool fault_detected = false;
-
-/* ---------------- Sensor Task ---------------- */
 
 static void sensor_task(void *arg)
 {
@@ -51,18 +47,48 @@ static void sensor_task(void *arg)
     }
 }
 
-/* ---------------- FSM Task ---------------- */
-
 static void fsm_task(void *arg)
 {
     while (1) {
         roverpi_tick(path_clear, drive_cmd, fault_detected);
-
         vTaskDelay(pdMS_TO_TICKS(FSM_TASK_PERIOD_MS));
     }
 }
 
-/* ---------------- Main Application ---------------- */
+static void uart_task(void *arg)
+{
+    char rx_buf[128];
+
+    serial_uart_send_line("ESP32 READY");
+
+    while (1) {
+        int len = serial_uart_receive(rx_buf, sizeof(rx_buf));
+
+        if (len > 0) {
+            ESP_LOGI(TAG, "Received: %s", rx_buf);
+
+            if (strstr(rx_buf, "PING")) {
+                serial_uart_send_line("PONG");
+            } else if (strstr(rx_buf, "FORWARD")) {
+                drive_cmd = true;
+                serial_uart_send_line("OK FORWARD");
+            } else if (strstr(rx_buf, "STOP")) {
+                drive_cmd = false;
+                serial_uart_send_line("OK STOP");
+            } else if (strstr(rx_buf, "LEFT")) {
+                serial_uart_send_line("OK LEFT");
+                // Later: set desired motion = TURN_LEFT
+            } else if (strstr(rx_buf, "RIGHT")) {
+                serial_uart_send_line("OK RIGHT");
+                // Later: set desired motion = TURN_RIGHT
+            } else {
+                serial_uart_send_line("ERR UNKNOWN");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(UART_TASK_PERIOD_MS));
+    }
+}
 
 void app_main(void)
 {
@@ -71,26 +97,13 @@ void app_main(void)
     motor_control_init();
     distance_sensor_init();
     roverpi_fsm_init();
+    serial_uart_init();
 
     scanner_servo_sweep_test();
 
-    xTaskCreate(
-        sensor_task,
-        "sensor_task",
-        4096,
-        NULL,
-        5,
-        NULL
-    );
-
-    xTaskCreate(
-        fsm_task,
-        "fsm_task",
-        4096,
-        NULL,
-        6,
-        NULL
-    );
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    xTaskCreate(fsm_task, "fsm_task", 4096, NULL, 6, NULL);
+    xTaskCreate(uart_task, "uart_task", 4096, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "Initialization complete. Tasks started.");
 }
