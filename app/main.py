@@ -395,5 +395,29 @@ def auto_stop():
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
+@app.route("/cam/pan_to")
+def cam_pan_to():
+    try:
+        angle = int(request.args.get("angle", 90))
+        angle = max(0, min(180, angle))
+        pantilt.set_angle(pantilt.PAN, angle)
+        pantilt.pan_angle = angle
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid angle"}), 400
+    return jsonify({"pan": pantilt.pan_angle})
+ 
+ 
+@app.route("/cam/tilt_to")
+def cam_tilt_to():
+    try:
+        angle = int(request.args.get("angle", 90))
+        angle = max(15, min(145, angle))
+        pantilt.set_angle(pantilt.TILT, angle)
+        pantilt.tilt_angle = angle
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid angle"}), 400
+    return jsonify({"tilt": pantilt.tilt_angle})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
