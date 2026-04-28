@@ -553,57 +553,102 @@ def index():
   </div>
 
   <script>
-    const log = document.getElementById('log');
-    function addLog(msg, ok=true) {
-      const d = document.createElement('div');
-      d.className = 'log-line';
-      d.innerHTML = '<span class="'+(ok?'log-ok':'log-err')+'">'+
-        new Date().toLocaleTimeString()+'</span> '+msg;
-      log.prepend(d);
-      if (log.children.length > 60) log.lastChild.remove();
-    }
+  const log = document.getElementById('log');
 
-    async function cmd(c) {
-      const r = await fetch('/cmd/'+c);
+  let driveInterval = null;
+  let activeDriveCmd = null;
+
+  function addLog(msg, ok=true) {
+    const d = document.createElement('div');
+    d.className = 'log-line';
+    d.innerHTML = '<span class="'+(ok?'log-ok':'log-err')+'">'+
+      new Date().toLocaleTimeString()+'</span> '+msg;
+    log.prepend(d);
+    if (log.children.length > 60) log.lastChild.remove();
+  }
+
+  async function cmd(c) {
+    try {
+      const r = await fetch('/cmd/' + c);
       const d = await r.json();
-      addLog('CMD '+c.toUpperCase()+' → '+d.esp32, r.ok);
+      addLog('CMD ' + c.toUpperCase() + ' → ' + (d.esp32 || ''), r.ok);
+    } catch (e) {
+      addLog('CMD ' + c.toUpperCase() + ' failed', false);
+    }
+  }
+
+  function startDrive(c) {
+    if (activeDriveCmd === c) return;
+
+    stopDrive(false);
+
+    activeDriveCmd = c;
+    cmd(c);
+
+    driveInterval = setInterval(() => {
+      cmd(c);
+    }, 200);
+  }
+
+  function stopDrive(sendStop = true) {
+    if (driveInterval) {
+      clearInterval(driveInterval);
+      driveInterval = null;
     }
 
-    async function setMode(m) {
-      const url = m === 'AUTO' ? '/auto/start' : '/auto/stop';
-      await fetch(url);
-      addLog('Mode → '+m);
-    }
+    activeDriveCmd = null;
 
-    async function poll() {
-      try {
-        const r = await fetch('/status');
-        const d = await r.json();
-        document.getElementById('online').className = 'up';
-        document.getElementById('t-dist').textContent =
-          d.esp32_msg && d.esp32_msg.includes('dist=')
-            ? d.esp32_msg.split('dist=')[1].split(' ')[0]+'cm' : '—';
-        document.getElementById('t-path').textContent =
-          d.esp32_msg && d.esp32_msg.includes('path=1') ? 'CLEAR' : 'BLOCKED';
-        document.getElementById('t-mode').textContent   = d.mode;
-        document.getElementById('t-ready').textContent  = d.system_ready ? 'YES' : 'NO';
-        document.getElementById('t-steps').textContent  = d.agent_steps;
-        document.getElementById('t-eps').textContent    = d.epsilon;
-        document.getElementById('t-esp').textContent    = d.esp32_msg || '—';
-        document.getElementById('btn-auto').className   =
-          d.mode === 'AUTO' ? 'mode-active' : '';
-        document.getElementById('btn-manual').className =
-          d.mode === 'MANUAL' ? 'mode-active' : '';
-        document.getElementById('map-img').src = '/map?t='+Date.now();
-      } catch(e) {
-        document.getElementById('online').className = '';
-      }
+    if (sendStop) {
+      cmd('stop');
     }
+  }
 
-    setInterval(poll, 800);
-    poll();
-    addLog('Local dashboard loaded');
-  </script>
+  document.addEventListener('mouseup', () => stopDrive());
+  document.addEventListener('touchend', () => stopDrive());
+
+  async function setMode(m) {
+    const url = m === 'AUTO' ? '/auto/start' : '/auto/stop';
+    await fetch(url);
+    addLog('Mode → '+m);
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/status');
+      const d = await r.json();
+
+      document.getElementById('online').className = 'up';
+
+      document.getElementById('t-dist').textContent =
+        d.esp32_msg && d.esp32_msg.includes('dist=')
+          ? d.esp32_msg.split('dist=')[1].split(' ')[0]+'cm' : '—';
+
+      document.getElementById('t-path').textContent =
+        d.esp32_msg && d.esp32_msg.includes('path=1') ? 'CLEAR' : 'BLOCKED';
+
+      document.getElementById('t-mode').textContent   = d.mode;
+      document.getElementById('t-ready').textContent  = d.system_ready ? 'YES' : 'NO';
+      document.getElementById('t-steps').textContent  = d.agent_steps;
+      document.getElementById('t-eps').textContent    = d.epsilon;
+      document.getElementById('t-esp').textContent    = d.esp32_msg || '—';
+
+      document.getElementById('btn-auto').className =
+        d.mode === 'AUTO' ? 'mode-active' : '';
+
+      document.getElementById('btn-manual').className =
+        d.mode === 'MANUAL' ? 'mode-active' : '';
+
+      document.getElementById('map-img').src = '/map?t=' + Date.now();
+
+    } catch(e) {
+      document.getElementById('online').className = '';
+    }
+  }
+
+  setInterval(poll, 800);
+  poll();
+  addLog('Local dashboard loaded');
+</script>
 </body>
 </html>"""
 
