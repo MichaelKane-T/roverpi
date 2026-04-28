@@ -111,9 +111,13 @@ def _startup_sequence():
             if "dist=" in msg:
                 try:
                     dist = float(msg.split("dist=")[1].split()[0])
-                    if dist > 0:
+                    # Accept -1.0 (open-space timeout) and any positive reading.
+                    # Only 0.0 is a true sensor wiring error.
+                    # In open rooms the HC-SR04 regularly times out (-1.0) — that is normal.
+                    if dist != 0.0:
                         valid_reads += 1
-                        log(f"Valid read {valid_reads}/{STARTUP_SENSOR_CHECKS}: {dist:.1f}cm")
+                        label = "open/timeout" if dist < 0 else f"{dist:.1f}cm"
+                        log(f"Valid read {valid_reads}/{STARTUP_SENSOR_CHECKS}: {label}")
                     break
                 except Exception:
                     pass
@@ -121,7 +125,7 @@ def _startup_sequence():
 
     sensor_ok = valid_reads >= STARTUP_SENSOR_CHECKS
     if not sensor_ok:
-        log("WARNING: Sensor not validated — check HC-SR04 wiring")
+        log("WARNING: Sensor not validated — only got 0.0 readings, check HC-SR04 wiring")
     else:
         log("Sensor validated")
 
@@ -198,7 +202,7 @@ def read_gyro_stub() -> dict:
 # almost always "PONG" and therefore never contains "path=1".
 _esp_status_lock = threading.Lock()
 _esp_status = {
-    "dist":  -1.0,
+    "dist":  -2.0,   # sentinel: -2.0 = no STATUS received yet
     "path":  0,     # 1 = clear, 0 = blocked
     "dir":   0,
     "fault": 0,
@@ -318,9 +322,13 @@ def _sensor_healthy() -> bool:
     """
     with _esp_status_lock:
         dist = _esp_status["dist"]
-    # -1.0 means we have never received a STATUS, or the last one timed out.
-    # 0.0 means sensor wiring error.  Anything positive is healthy.
-    return dist > 0.0
+    # -2.0 is the sentinel "never received a STATUS response at all" (initial value).
+    # -1.0 means the HC-SR04 timed out — normal in open space, path treated as clear.
+    #  0.0 means bad echo / wiring glitch — treat as unhealthy.
+    # >0.0 is a normal distance reading.
+    # So: healthy = we have received at least one STATUS (dist != -2.0 sentinel)
+    #     AND it wasn't a wiring-error zero.
+    return dist != -2.0 and dist != 0.0
 
 def _auto_loop():
     while not _system_ready:
