@@ -29,7 +29,7 @@ void scanner_servo_init(void);
 /**
  * @brief Set the scanner servo to a specific angle (0-180 degrees).
  */
-void scanner_servo_set_angle(int angle);
+void scanner_servo_set_angle(uint8_t angle);
 
 /**
  * @brief Center the scanner servo.

@@ -93,7 +93,7 @@ void roverpi_fsm_init(void)
 void roverpi_set_mode(control_mode_t mode)
 {   /* Always stop motors when handing over control */
     transition_to(STATE_STOP);
-    current_dir = DIR_STOP;
+    current_direction = DIR_STOP;
     current_mode = mode;
 }
 
@@ -120,12 +120,12 @@ rover_state_t roverpi_set_state(rover_state_t next)
 
 control_mode_t roverpi_get_mode(void)
 {
-    return control_mode;
+    return current_mode;
 }
 
 drive_direction_t roverpi_get_direction(void)
 {
-    return current_dir;
+    return current_direction;
 }
 
 /* The main FSM tick function. Call this periodically (e.g. every 100ms) with
@@ -137,7 +137,7 @@ drive_direction_t roverpi_get_direction(void)
  */
 void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detected)
 {
-    current_dir = direction;
+    current_direction = direction;
 
     /*==================Transition Logic=======================*/
     switch (current_state) {

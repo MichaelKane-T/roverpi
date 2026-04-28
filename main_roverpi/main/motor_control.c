@@ -43,8 +43,11 @@ void motor_control_init(void) {
 }
 
 void motors_forward(uint8_t speed) {
-    gpio_set_level(TB_AIN1, 1); gpio_set_level(TB_AIN2, 0);
-    gpio_set_level(TB_BIN1, 1); gpio_set_level(TB_BIN2, 0);
+    gpio_set_level(TB_AIN1, 1); 
+    gpio_set_level(TB_AIN2, 0);
+    gpio_set_level(TB_BIN1, 1); 
+    gpio_set_level(TB_BIN2, 0);
+
     ledc_set_duty(PWM_MODE, PWM_CHANNEL_A, speed);
     ledc_set_duty(PWM_MODE, PWM_CHANNEL_B, speed);
     ledc_update_duty(PWM_MODE, PWM_CHANNEL_A);
@@ -67,16 +70,6 @@ void motor_set_speed(uint8_t left_speed, uint8_t right_speed)
 
     ledc_set_duty(PWM_MODE, PWM_CHANNEL_B, right_speed);
     ledc_update_duty(PWM_MODE, PWM_CHANNEL_B);
-}
-
-void motors_forward(uint8_t speed)
-{
-    gpio_set_level(TB_AIN1, 1);
-    gpio_set_level(TB_AIN2, 0);
-    gpio_set_level(TB_BIN1, 1);
-    gpio_set_level(TB_BIN2, 0);
-
-    motor_set_speed(speed, speed);
 }
 
 void motors_backward(uint8_t speed)

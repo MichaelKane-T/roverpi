@@ -62,7 +62,7 @@ void scanner_servo_init(void)
 
 void scanner_servo_set_angle(uint8_t angle_deg)
 {
-    uint32_t duty = angle_to_duty(angle_deg);
+    uint32_t duty = (uint32_t)angle_to_duty(angle_deg);
 
     ESP_ERROR_CHECK(ledc_set_duty(PWM_MODE, SERVO_PWM_CHANNEL, duty));
     ESP_ERROR_CHECK(ledc_update_duty(PWM_MODE, SERVO_PWM_CHANNEL));
