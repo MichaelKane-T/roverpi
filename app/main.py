@@ -345,26 +345,24 @@ def _auto_loop():
             continue
 
         # AUTO safety gate.
-        # If distance is missing, invalid, or too close, hold position.
+        # If distance is missing, invalid, or too close, stop and scan left/right if not safe backwards then scan again
         if not _auto_path_safe():
-            _consecutive_sensor_failures += 1
-            esp32.send("STATUS")
-
-            if _consecutive_sensor_failures >= _SENSOR_FAILURE_THRESHOLD:
-                print(
-                    f"[AUTO] Path unsafe or sensor failed "
-                    f"{_consecutive_sensor_failures}x — holding"
-                )
+            if _consecutive_sensor_failures < _SENSOR_FAILURE_THRESHOLD:
+                print(f"[AUTO] Unsafe path detected — stopping and scanning (failure count {_consecutive_sensor_failures})")
                 esp32.send("STOP")
+                time.sleep(0.5)
+                esp32.send("SCAN")
                 time.sleep(1.0)
+                _consecutive_sensor_failures += 1
             else:
-                print(
-                    f"[AUTO] Path check miss "
-                    f"{_consecutive_sensor_failures}/"
-                    f"{_SENSOR_FAILURE_THRESHOLD} — waiting"
-                )
-                time.sleep(0.25)
-
+                print(f"[AUTO] Unsafe path detected — sensor failure threshold reached ({_consecutive_sensor_failures})")
+                esp32.send("STOP")
+                time.sleep(0.5)
+                # move backwards a bit to try to clear obstacle, then scan again
+                esp32.send("BACKWARD")
+                time.sleep(0.5)
+                esp32.send("STOP")
+                time.sleep(2.0)
             continue
 
         # Sensor/path is good again.
