@@ -64,9 +64,9 @@ from occupancy_map import OccupancyMap
 
 # ── configuration ─────────────────────────────────────────────────────────────
 IDLE_TIMEOUT_S        = 30.0
-PING_INTERVAL_S       = 0.2    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
+PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
 AUTO_STEP_HZ          = 4
-FRAME_W, FRAME_H      = 320, 240
+FRAME_W, FRAME_H      = 640, 480
 
 STARTUP_ESP32_TIMEOUT = 10.0   # seconds to wait for ESP32 READY
 STARTUP_SENSOR_CHECKS = 5      # number of valid (non -1.0) STATUS reads required
@@ -293,29 +293,8 @@ def _sensor_healthy() -> bool:
                 pass
     return False
 
-# Track failures OUTSIDE the loop
-_consecutive_sensor_failures = 0
-_SENSOR_FAILURE_THRESHOLD = 5
-
-def _sensor_healthy() -> bool:
-    """
-    Returns True if the most recent STATUS message has a valid distance.
-    Limits history scan to last 10 messages to avoid stale data
-    hiding behind a wall of PONGs.
-    """
-    history = esp32.get_history()
-    for msg in reversed(history[-10:]):  # only check recent messages
-        if "dist=" in msg:
-            try:
-                dist = float(msg.split("dist=")[1].split()[0])
-                return dist > 0.0
-            except Exception:
-                pass
-    return False
-
 def _auto_loop():
-    global _consecutive_sensor_failures
-
+    # Wait until startup sequence has completed before doing anything
     while not _system_ready:
         time.sleep(0.5)
 
@@ -327,6 +306,7 @@ def _auto_loop():
             mode     = _mode
             last_inp = _last_manual_input
 
+        # ── idle timeout: MANUAL → AUTO ──────────────────────────────
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
                 print("[Mode] Idle timeout — resuming AUTO")
@@ -335,25 +315,16 @@ def _auto_loop():
             time.sleep(0.5)
             continue
 
-        # ── sensor health gate ────────────────────────────────────
+        # ── sensor health gate ────────────────────────────────────────
+        # Don't drive if sensor is returning -1.0 — would cause thrashing
         if not _sensor_healthy():
-            _consecutive_sensor_failures += 1
-            esp32.send("STATUS")  # request a fresh reading
-
-            if _consecutive_sensor_failures >= _SENSOR_FAILURE_THRESHOLD:
-                print(f"[AUTO] Sensor failed {_consecutive_sensor_failures}x — holding")
-                esp32.send("STOP")
-                time.sleep(1.0)
-            else:
-                # Allow a few transient misses without stopping
-                print(f"[AUTO] Sensor miss {_consecutive_sensor_failures}/{_SENSOR_FAILURE_THRESHOLD} — waiting")
-                time.sleep(0.25)
+            print("[AUTO] Sensor unhealthy (dist=-1.0) — holding, requesting STATUS")
+            esp32.send("STATUS")
+            esp32.send("STOP")
+            time.sleep(1.0)
             continue
 
-        # Sensor is healthy — reset failure counter
-        _consecutive_sensor_failures = 0
-
-        # ── RL step ───────────────────────────────────────────────
+        # ── RL step ───────────────────────────────────────────────────
         action = agent.select_action(obs)
         next_obs, reward, _, info = env.step(action)
         agent.store(obs, action, reward, next_obs)
@@ -369,6 +340,7 @@ def _auto_loop():
             agent.decay_epsilon()
 
         time.sleep(1.0 / AUTO_STEP_HZ)
+
 threading.Thread(target=_startup_sequence,    daemon=True).start()
 threading.Thread(target=_ping_loop,           daemon=True).start()
 threading.Thread(target=_esp_listener_loop,   daemon=True).start()
