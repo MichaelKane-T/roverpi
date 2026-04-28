@@ -64,7 +64,7 @@ from occupancy_map import OccupancyMap
 
 # ── configuration ─────────────────────────────────────────────────────────────
 IDLE_TIMEOUT_S        = 30.0
-PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
+PING_INTERVAL_S       = 0.2    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
 AUTO_STEP_HZ          = 4
 FRAME_W, FRAME_H      = 320, 240
 
@@ -317,12 +317,17 @@ def _auto_loop():
 
         # ── sensor health gate ────────────────────────────────────────
         # Don't drive if sensor is returning -1.0 — would cause thrashing
+        consecutive_sensor_failures = 0
+
+        # Inside _auto_loop while True:
         if not _sensor_healthy():
-            print("[AUTO] Sensor unhealthy (dist=-1.0) — holding, requesting STATUS")
-            esp32.send("STATUS")
-            esp32.send("STOP")
-            time.sleep(1.0)
+            consecutive_sensor_failures += 1
+            if consecutive_sensor_failures > 3: # Allow 3 bad reads before stopping
+                print("[AUTO] Sensor persistently unhealthy — holding")
+                esp32.send("STOP")
             continue
+        else:
+            consecutive_sensor_failures = 0
 
         # ── RL step ───────────────────────────────────────────────────
         action = agent.select_action(obs)
