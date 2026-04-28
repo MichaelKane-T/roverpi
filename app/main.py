@@ -148,6 +148,48 @@ def _startup_sequence():
     set_mode("AUTO")
     log("Startup complete — AUTO mode active" if sensor_ok
         else "Startup complete with warnings — sensor unhealthy, AUTO blocked")
+    
+# ── agent action selection ───────────────────────────────────────────────────
+PREDATOR_ACTION_HOLD_STEPS = 3
+PREDATOR_TURN_PULSE_S      = 0.35
+PREDATOR_FORWARD_BIAS      = True   
+
+def _predator_choose_action(obs, last_action, hold_count):
+    """
+    Predator Mode:
+    - Hold actions briefly so motion looks intentional.
+    - Prefer forward when clear.
+    - Avoid repeating turns forever.
+    - Still uses RL agent as decision source.
+    """
+
+    esp_st = get_esp_status()
+    path_clear = esp_st["path"] == 1
+
+    # If blocked, let env.safe_action() handle side choice / backward escape.
+    if not path_clear:
+        return agent.select_action(obs), 0
+
+    # Hold previous forward action briefly.
+    if hold_count > 0 and last_action == 0:
+        return last_action, hold_count - 1
+
+    # Ask ML agent.
+    action = agent.select_action(obs)
+
+    # If ML wants STOP while path is clear, override to FORWARD.
+    if action == 4 and PREDATOR_FORWARD_BIAS:
+        action = 0
+
+    # If ML wants BACKWARD while path is clear, override to FORWARD.
+    if action == 3 and path_clear:
+        action = 0
+
+    # Avoid endless left/right spin.
+    if last_action in (1, 2) and action == last_action:
+        action = 0
+
+    return action, PREDATOR_ACTION_HOLD_STEPS
 
 # ── mode state ────────────────────────────────────────────────────────────────
 _mode              = "MANUAL"
@@ -337,6 +379,8 @@ def _auto_loop():
     obs              = env.reset()
     step             = 0
     obstacle_strikes = 0
+    last_action = 4
+    action_hold = 0
 
     while True:
         with _mode_lock:
@@ -389,10 +433,22 @@ def _auto_loop():
         obstacle_strikes = 0
 
         # ── RL step ───────────────────────────────────────────────────
-        action             = agent.select_action(obs)
+        action, action_hold = _predator_choose_action(obs, last_action, action_hold)
+
         next_obs, reward, _, info = env.step(action)
+
         agent.store(obs, action, reward, next_obs)
-        occ_map.move(action)
+        occ_map.move(info["safe_action"])
+
+        last_action = info["safe_action"]
+
+        print(
+            f"[PREDATOR] agent={info['agent_action']} "
+            f"safe={info['safe_action']} "
+            f"override={info['overridden']} "
+            f"reward={reward:.2f} "
+            f"dist={info['distance_cm']:.1f}"
+            )
 
         if step % 5 == 0:
             esp32.send("STATUS")
