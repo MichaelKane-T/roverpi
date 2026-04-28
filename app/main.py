@@ -338,11 +338,6 @@ def _auto_loop():
     step             = 0
     obstacle_strikes = 0
 
-    # Watermark: only inspect messages that arrived AFTER this index.
-    # Without this, a single OBSTACLE STOP stays in history forever and
-    # the escape->scan loop never terminates even after the rover backs away.
-    history_watermark = len(esp32.get_history())
-
     while True:
         with _mode_lock:
             mode     = _mode
@@ -355,7 +350,6 @@ def _auto_loop():
                 set_mode("AUTO")
                 obs = env.reset()
                 obstacle_strikes  = 0
-                history_watermark = len(esp32.get_history())
             time.sleep(0.5)
             continue
 
@@ -367,6 +361,33 @@ def _auto_loop():
             time.sleep(1.0)
             continue
 
+        # ── obstacle check BEFORE sending action ─────────────────────
+        # Read path directly from the parsed STATUS cache — this is the
+        # ground truth and cannot be buried by scan noise.
+        # Don't send any motion command if the ESP32 says path is blocked;
+        # just increment strikes and wait/escape.
+        esp_st     = get_esp_status()
+        path_clear = esp_st["path"] == 1
+        dist_cm    = esp_st["dist"]
+
+        if not path_clear:
+            obstacle_strikes += 1
+            print(f"[AUTO] Path blocked ({dist_cm:.1f}cm) strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}")
+
+            if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
+                print("[AUTO] Max obstacle strikes — executing escape")
+                _escape_from_obstacle()
+                obs              = env.reset()
+                obstacle_strikes = 0
+                step             = 0
+            else:
+                # Hold — don't send any command while blocked
+                time.sleep(1.0 / AUTO_STEP_HZ)
+            continue
+
+        # Path is clear — reset strike counter and proceed with RL step
+        obstacle_strikes = 0
+
         # ── RL step ───────────────────────────────────────────────────
         action             = agent.select_action(obs)
         next_obs, reward, _, info = env.step(action)
@@ -376,37 +397,6 @@ def _auto_loop():
         if step % 5 == 0:
             esp32.send("STATUS")
             time.sleep(0.05)
-
-        # ── obstacle detection (watermarked) ──────────────────────────
-        # Only look at messages that arrived since the last check.
-        # Never re-read old history entries.
-        history           = esp32.get_history()
-        new_msgs          = history[history_watermark:]
-        history_watermark = len(history)
-
-        obstacle_now = False
-        for msg in new_msgs:
-            if msg in ("PONG", "TOCK", ""):
-                continue
-            if "OBSTACLE" in msg:
-                obstacle_now = True
-                break
-
-        if obstacle_now:
-            obstacle_strikes += 1
-            print(f"[AUTO] Obstacle strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}")
-
-            if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
-                print("[AUTO] Max obstacle strikes — executing escape")
-                _escape_from_obstacle()
-                obs               = env.reset()
-                obstacle_strikes  = 0
-                step              = 0
-                # Advance watermark past all the OBSTACLE/SCAN messages
-                # generated during the escape so they don't re-trigger.
-                history_watermark = len(esp32.get_history())
-        elif obstacle_strikes > 0:
-            obstacle_strikes = max(0, obstacle_strikes - 1)
 
         obs   = next_obs
         step += 1
