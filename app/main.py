@@ -293,59 +293,101 @@ def _sensor_healthy() -> bool:
                 pass
     return False
 
+PI_AUTO_SAFE_DISTANCE_CM = 25.0
+_SENSOR_FAILURE_THRESHOLD = 5
+_consecutive_sensor_failures = 0
+
+
+def _auto_path_safe() -> bool:
+    """
+    Returns True only if the most recent STATUS message reports
+    a safe forward distance for AUTO mode.
+
+    This does not just mean the sensor works.
+    It means the rover has enough space to drive forward.
+    """
+    history = esp32.get_history()
+
+    for msg in reversed(history[-10:]):
+        if "dist=" in msg:
+            try:
+                dist = float(msg.split("dist=")[1].split()[0])
+                return dist >= PI_AUTO_SAFE_DISTANCE_CM
+            except Exception:
+                pass
+
+    return False
+
+
 def _auto_loop():
-    # Wait until startup sequence has completed before doing anything
+    global _consecutive_sensor_failures
+
     while not _system_ready:
         time.sleep(0.5)
 
-    obs  = env.reset()
+    obs = env.reset()
     step = 0
 
     while True:
         with _mode_lock:
-            mode     = _mode
+            mode = _mode
             last_inp = _last_manual_input
 
-        # ── idle timeout: MANUAL → AUTO ──────────────────────────────
+        # Manual mode: wait for user input.
+        # After long idle time, return to AUTO.
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
                 print("[Mode] Idle timeout — resuming AUTO")
                 set_mode("AUTO")
                 obs = env.reset()
+
             time.sleep(0.5)
             continue
 
-        # ── sensor health gate ────────────────────────────────────────
-        # Don't drive if sensor is returning -1.0 — would cause thrashing
-        consecutive_sensor_failures = 0
+        # AUTO safety gate.
+        # If distance is missing, invalid, or too close, hold position.
+        if not _auto_path_safe():
+            _consecutive_sensor_failures += 1
+            esp32.send("STATUS")
 
-        # Inside _auto_loop while True:
-        if not _sensor_healthy():
-            consecutive_sensor_failures += 1
-            if consecutive_sensor_failures > 3: # Allow 3 bad reads before stopping
-                print("[AUTO] Sensor persistently unhealthy — holding")
+            if _consecutive_sensor_failures >= _SENSOR_FAILURE_THRESHOLD:
+                print(
+                    f"[AUTO] Path unsafe or sensor failed "
+                    f"{_consecutive_sensor_failures}x — holding"
+                )
                 esp32.send("STOP")
-            continue
-        else:
-            consecutive_sensor_failures = 0
+                time.sleep(1.0)
+            else:
+                print(
+                    f"[AUTO] Path check miss "
+                    f"{_consecutive_sensor_failures}/"
+                    f"{_SENSOR_FAILURE_THRESHOLD} — waiting"
+                )
+                time.sleep(0.25)
 
-        # ── RL step ───────────────────────────────────────────────────
+            continue
+
+        # Sensor/path is good again.
+        _consecutive_sensor_failures = 0
+
+        # RL/autonomous step.
         action = agent.select_action(obs)
-        next_obs, reward, _, info = env.step(action)
+
+        next_obs, reward, done, info = env.step(action)
+
         agent.store(obs, action, reward, next_obs)
         occ_map.move(action)
 
         if step % 5 == 0:
             esp32.send("STATUS")
 
-        obs   = next_obs
+        obs = next_obs
         step += 1
 
         if step % 100 == 0:
             agent.decay_epsilon()
 
         time.sleep(1.0 / AUTO_STEP_HZ)
-
 threading.Thread(target=_startup_sequence,    daemon=True).start()
 threading.Thread(target=_ping_loop,           daemon=True).start()
 threading.Thread(target=_esp_listener_loop,   daemon=True).start()
