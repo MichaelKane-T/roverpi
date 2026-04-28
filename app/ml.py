@@ -1,3 +1,16 @@
+'''
+*=========================================================================
+ * ml.py
+ *
+ * Placeholder ML module for RoverPi. Implements a simple vision-based scene
+ * classifier using OpenCV. In a real implementation, this would be replaced
+ * with a more sophisticated model (e.g. CNN) and possibly integrated with
+ * sensor fusion for better decision-making.
+ *
+ * Created on: April 22, 2026
+ *=================================================================
+'''
+
 import cv2
 import numpy as np
 
@@ -5,7 +18,7 @@ import numpy as np
 class SimpleVision:
     def __init__(self):
         pass
-0
+
     def analyze(self, frame):
         """
         Very lightweight placeholder logic.

@@ -1,4 +1,5 @@
 """
+/*=========================================================================
 occupancy_map.py
 Lightweight occupancy grid for RoverPi exploration.
 
@@ -11,6 +12,7 @@ Grid:
   - 40×40 grid = 4m × 4m map
   - Origin (rover start) at centre
   - Values: 0.0 = unknown, 0.5 = free, 1.0 = occupied
+/*=========================================================================
 """
 
 import numpy as np

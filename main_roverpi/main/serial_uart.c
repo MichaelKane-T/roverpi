@@ -1,13 +1,13 @@
-/*
+/*=========================================================================
  * serial_uart.c
  *
- * Created on: Jun 6, 2024
+ * Created on: April 25, 2026
  * Author: Michael Kane
  * Description:
  * UART communication functions for RoverPi ESP32 controller.
  * Provides initialization, send, and receive functions for UART communication
  * between the Raspberry Pi and ESP32.
- */
+ ========================================================================*/
 
 #include "serial_uart.h"
 #include "hardware_config.h"

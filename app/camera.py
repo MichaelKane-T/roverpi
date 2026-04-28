@@ -1,5 +1,13 @@
+'''=================================================================
+ * camera.py
+ *
+ * Python module for handling camera input using OpenCV.
+ *
+ * Created on: Jun 6, 2024
+ * Author: Michael Kane
+ * =================================================================
+ '''
 import cv2
-
 
 class CameraStream:
     def __init__(self, camera_index=0, width=640, height=480):

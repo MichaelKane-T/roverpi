@@ -1,20 +1,52 @@
 """
-app.py
-RoverPi Flask Dashboard + RL Autonomous Controller
-
-Modes
-─────
-  AUTO   : RL agent drives, logs experience, trains in background
-  MANUAL : Dashboard/human control; if idle > IDLE_TIMEOUT_S → AUTO
-
-ESP32 UART protocol (Pi → ESP32):
-  FORWARD / BACKWARD / LEFT / RIGHT / STOP / PING / STATUS / FAULT_CLEAR
-
-ESP32 → Pi responses:
-  OK <CMD> / ERR FAULT / ERR UNKNOWN / OBSTACLE STOP
-  SCAN angle=<deg> dist=<cm>
-  STATUS dist=XX.X path=X dir=X fault=X
-  PONG
+*=========================================================================
+* main.py
+* RoverPi Flask Dashboard + Autonomous Controller
+* Created on: April 22, 2026
+*
+* Modes
+* ─────
+* AUTO   : PI ML agent drives, logs experience, trains in background
+* MANUAL : Dashboard/human control; if idle > IDLE_TIMEOUT_S → AUTO
+*
+* ESP32 motor/sensor controller for RoverPi autonomous rover.
+* Architecture:Raspberry Pi --UART--> ESP32
+* Authors: Michael Kane
+*
+* RoverPi ESP32 Controller — Clean Multi-File Version
+*
+* Raspberry Pi = brain
+* ESP32 = body controller
+* UART between Pi and ESP32
+* ESP32 owns motors, ultrasonic sensor, scanner servo, safety stop, and FSM
+* Pi sends commands like "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "SCAN", etc.
+* ESP32 motor/sensor controller for RoverPi autonomous rover.
+*
+* Architecture:
+*   Raspberry Pi --UART--> ESP32
+*
+* Pi -> ESP32 commands:
+*   TICK
+*   FORWARD
+*   BACKWARD
+*   LEFT
+*   RIGHT
+*   STOP
+*   STATUS
+*   SCAN
+*   SCAN_AT <angle>
+*   FAULT_CLEAR
+*
+* ESP32 -> Pi responses:
+*   TOCK
+*   OK <CMD>
+*   ERR FAULT
+*   ERR UNKNOWN
+*   ERR HEARTBEAT LOST
+*   OBSTACLE STOP
+*   STATUS dist=XX.X path=X dir=X fault=X
+*   SCAN angle=<d> dist=<cm>
+=========================================================================*/
 """
 
 import time
@@ -34,7 +66,7 @@ from occupancy_map import OccupancyMap
 IDLE_TIMEOUT_S        = 30.0
 PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
 AUTO_STEP_HZ          = 4
-FRAME_W, FRAME_H      = 640, 480
+FRAME_W, FRAME_H      = 320, 240
 
 STARTUP_ESP32_TIMEOUT = 10.0   # seconds to wait for ESP32 READY
 STARTUP_SENSOR_CHECKS = 5      # number of valid (non -1.0) STATUS reads required
@@ -88,20 +120,25 @@ def _startup_sequence():
     log("Waiting for ESP32 READY...")
     deadline    = time.time() + STARTUP_ESP32_TIMEOUT
     esp32_ready = False
+
     while time.time() < deadline:
+        esp32.send("HELLO")
+        time.sleep(0.2)
+
         msg = esp32.get_latest_message()
-        if msg and "READY" in msg:
+
+        if msg and "ESP32 READY" in msg:
             esp32_ready = True
             break
-        esp32.send("PING")
-        time.sleep(0.3)
+
+    time.sleep(0.2)
     log("ESP32 READY confirmed" if esp32_ready else "WARNING: ESP32 READY not received")
 
     # 2. Wait for valid sensor data
     log("Waiting for valid sensor readings...")
     valid_reads = 0
     attempts    = 0
-    while valid_reads < STARTUP_SENSOR_CHECKS and attempts < 30:
+    while valid_reads < STARTUP_SENSOR_CHECKS and attempts < 10:
         esp32.send("STATUS")
         time.sleep(0.4)
         for msg in reversed(esp32.get_history()):
@@ -562,7 +599,7 @@ def mode_switch(m):
 def send_cmd(cmd):
     allowed = {
         "forward", "backward", "left", "right", "stop",
-        "scan", "return", "hold", "lights", "fault_clear"
+        "scan", "fault_clear"
     }
     if cmd.lower() not in allowed:
         return jsonify({"error": "invalid command"}), 400

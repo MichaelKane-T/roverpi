@@ -1,7 +1,6 @@
 /******************************************************************************
  * roverpi_fsm.c
- * Created:  2024-06-17
- * Modified: 2025
+ * Created:  2026-04-22
  * Author:   Michael Kane
  * Description:
  *   Finite state machine for the ESP32 side of RoverPi.

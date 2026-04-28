@@ -260,82 +260,76 @@ static void uart_task(void *arg)
             ESP_LOGI(TAG, "RX: \"%s\"", rx_buf);
 
             /*--------------------------------------------------------
-             * Heartbeat
-             *--------------------------------------------------------*/
-            if (strcmp(rx_buf, "TICK") == 0) {
+            * Startup handshake
+            *--------------------------------------------------------*/
+            if (strcmp(rx_buf, "HELLO") == 0) {
+                serial_uart_send_line("ESP32 READY");
+            }
+
+            /*--------------------------------------------------------
+            * Heartbeat
+            *--------------------------------------------------------*/
+            else if (strcmp(rx_buf, "PING") == 0) {
                 STATE_LOCK();
                 rover_state.last_heartbeat = xTaskGetTickCount();
                 STATE_UNLOCK();
 
-                serial_uart_send_line("TOCK");
+                serial_uart_send_line("PONG");
             }
 
             /*--------------------------------------------------------
              * FORWARD: only allowed when path is clear and no fault.
              *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "FORWARD") == 0) {
-                STATE_LOCK();
-                bool blocked = !rover_state.path_clear;
-                bool faulted = rover_state.fault_detected;
+                                    // FIXED
+                    STATE_LOCK();
+                    bool blocked = !rover_state.path_clear;
+                    bool faulted = rover_state.fault_detected;
+                    if (faulted)       rover_state.direction = DIR_STOP;
+                    else if (blocked)  rover_state.direction = DIR_STOP;
+                    else               rover_state.direction = DIR_FORWARD;
+                    STATE_UNLOCK();
 
-                if (faulted) {
-                    rover_state.direction = DIR_STOP;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("ERR FAULT");
-                } else if (blocked) {
-                    rover_state.direction = DIR_STOP;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("OBSTACLE STOP");
-                } else {
-                    rover_state.direction = DIR_FORWARD;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("OK FORWARD");
-                }
+                    // Act on snapshot — no lock held during UART TX
+                    if (faulted)       serial_uart_send_line("ERR FAULT");
+                    else if (blocked)  serial_uart_send_line("OBSTACLE STOP");
+                    else               serial_uart_send_line("OK FORWARD");
             }
 
             else if (strcmp(rx_buf, "BACKWARD") == 0) {
                 STATE_LOCK();
                 bool faulted = rover_state.fault_detected;
+                if (faulted) rover_state.direction = DIR_STOP;
+                else         rover_state.direction = DIR_BACKWARD;
+                STATE_UNLOCK();
 
-                if (faulted) {
-                    rover_state.direction = DIR_STOP;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("ERR FAULT");
-                } else {
-                    rover_state.direction = DIR_BACKWARD;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("OK BACKWARD");
-                }
+                if (faulted) serial_uart_send_line("ERR FAULT");
+                else         serial_uart_send_line("OK BACKWARD");
+                
             }
 
             else if (strcmp(rx_buf, "LEFT") == 0) {
                 STATE_LOCK();
                 bool faulted = rover_state.fault_detected;
+                if (faulted) rover_state.direction = DIR_STOP;
+                else         rover_state.direction = DIR_LEFT;
+                STATE_UNLOCK();
 
-                if (faulted) {
-                    rover_state.direction = DIR_STOP;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("ERR FAULT");
-                } else {
-                    rover_state.direction = DIR_LEFT;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("OK LEFT");
-                }
+                if (faulted) serial_uart_send_line("ERR FAULT");
+                else         serial_uart_send_line("OK LEFT");
+
             }
 
             else if (strcmp(rx_buf, "RIGHT") == 0) {
                 STATE_LOCK();
                 bool faulted = rover_state.fault_detected;
+                if (faulted) rover_state.direction = DIR_STOP;
+                else         rover_state.direction = DIR_RIGHT;
+                STATE_UNLOCK();
 
-                if (faulted) {
-                    rover_state.direction = DIR_STOP;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("ERR FAULT");
-                } else {
-                    rover_state.direction = DIR_RIGHT;
-                    STATE_UNLOCK();
-                    serial_uart_send_line("OK RIGHT");
-                }
+                if (faulted) serial_uart_send_line("ERR FAULT");
+                else         serial_uart_send_line("OK RIGHT");
+
             }
 
             else if (strcmp(rx_buf, "STOP") == 0) {
@@ -439,7 +433,7 @@ static void fsm_task(void *arg)
          * If Pi stops sending TICK messages, ESP32 safely stops.
          *------------------------------------------------------------*/
         TickType_t now = xTaskGetTickCount();
-        TickType_t elapsed_ms = (now - last_hb) * portTICK_PERIOD_MS;
+        uint32_t elapsed_ms = (uint32_t)((now - last_hb) * (uint64_t)portTICK_PERIOD_MS);
 
         if ((last_hb > 0) && (elapsed_ms > HEARTBEAT_TIMEOUT_MS)) {
             if (!heartbeat_warned) {

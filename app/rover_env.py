@@ -96,7 +96,7 @@ class RoverEnv:
         return self._get_obs()
 
     def update_scan(self, angle_deg: int, dist_cm: float):
-        """Called by app.py scan parser whenever a SCAN line arrives."""
+        """Called by main.py scan parser whenever a SCAN line arrives."""
         with self._scan_lock:
             self._scan_readings[angle_deg] = dist_cm
 

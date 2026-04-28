@@ -1,3 +1,15 @@
+'''
+/*=========================================================================
+pantilt.py
+RoverPi pan-tilt servo control via PCA9685 PWM driver.
+This module provides functions to control the pan and tilt angles of the ADUCAM 
+servo using the PCA9685 PWM driver. It initializes the driver, sets the PWM frequency, 
+and allows for adjusting the pan and tilt angles with simple functions.
+Created on: Apr 27, 2026
+Author: Michael Kane
+=================================================================
+'''
+
 from  smbus2 import SMBus
 import time
 
