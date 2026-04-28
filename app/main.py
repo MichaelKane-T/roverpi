@@ -4,49 +4,24 @@
 * RoverPi Flask Dashboard + Autonomous Controller
 * Created on: April 22, 2026
 *
-* Modes
-* ─────
-* AUTO   : PI ML agent drives, logs experience, trains in background
-* MANUAL : Dashboard/human control; if idle > IDLE_TIMEOUT_S → AUTO
+* FIXES APPLIED (see FIX comments):
+*   FIX-A  Dashboard "BLOCKED always" — path status now read from the
+*           dedicated /esp32/status cache, not from get_latest_message()
+*           which is almost always "PONG".
 *
-* ESP32 motor/sensor controller for RoverPi autonomous rover.
-* Architecture:Raspberry Pi --UART--> ESP32
-* Authors: Michael Kane
+*   FIX-B  Manual command lag — /cmd route no longer calls set_mode()
+*           when already in MANUAL, preventing the spurious STOP that
+*           was sent on every button press before the real command.
 *
-* RoverPi ESP32 Controller — Clean Multi-File Version
+*   FIX-C  AUTO stuck after obstacle — _auto_loop now detects
+*           OBSTACLE STOP in the ESP32 response, executes a timed
+*           backward escape + re-scan, and resets env before resuming.
 *
-* Raspberry Pi = brain
-* ESP32 = body controller
-* UART between Pi and ESP32
-* ESP32 owns motors, ultrasonic sensor, scanner servo, safety stop, and FSM
-* Pi sends commands like "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "SCAN", etc.
-* ESP32 motor/sensor controller for RoverPi autonomous rover.
-*
-* Architecture:
-*   Raspberry Pi --UART--> ESP32
-*
-* Pi -> ESP32 commands:
-*   TICK
-*   FORWARD
-*   BACKWARD
-*   LEFT
-*   RIGHT
-*   STOP
-*   STATUS
-*   SCAN
-*   SCAN_AT <angle>
-*   FAULT_CLEAR
-*
-* ESP32 -> Pi responses:
-*   TOCK
-*   OK <CMD>
-*   ERR FAULT
-*   ERR UNKNOWN
-*   ERR HEARTBEAT LOST
-*   OBSTACLE STOP
-*   STATUS dist=XX.X path=X dir=X fault=X
-*   SCAN angle=<d> dist=<cm>
-=========================================================================*/
+*   FIX-D  Obstacle escape helper — _escape_from_obstacle() sends
+*           BACKWARD for a fixed duration, then STOPs and SCANs so
+*           the occupancy map and env have fresh data before the next
+*           agent step.
+*=========================================================================
 """
 
 import time
@@ -64,13 +39,18 @@ from occupancy_map import OccupancyMap
 
 # ── configuration ─────────────────────────────────────────────────────────────
 IDLE_TIMEOUT_S        = 30.0
-PING_INTERVAL_S       = 0.4   # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
+PING_INTERVAL_S       = 0.4
 AUTO_STEP_HZ          = 4
 FRAME_W, FRAME_H      = 640, 480
 
-STARTUP_ESP32_TIMEOUT = 10.0   # seconds to wait for ESP32 READY
-STARTUP_SENSOR_CHECKS = 5      # number of valid (non -1.0) STATUS reads required
-STARTUP_SCAN_WAIT     = 2.0    # seconds to let initial scan complete
+STARTUP_ESP32_TIMEOUT = 10.0
+STARTUP_SENSOR_CHECKS = 5
+STARTUP_SCAN_WAIT     = 2.0
+
+# FIX-C/D: how long to reverse when stuck, and how many consecutive
+# OBSTACLE STOP responses before we give up and try the escape.
+ESCAPE_BACKWARD_S     = 0.8   # seconds of BACKWARD during escape
+OBSTACLE_STRIKE_MAX   = 3     # consecutive obstacle responses before escape
 
 # ── hardware init ─────────────────────────────────────────────────────────────
 picam2 = Picamera2()
@@ -92,20 +72,10 @@ env     = RoverEnv(picam2, esp32)
 agent   = RoverAgent()
 
 # ── system ready gate ─────────────────────────────────────────────────────────
-# Auto loop will not send any motion commands until this is True.
 _system_ready = False
 _startup_log  = []
 
 def _startup_sequence():
-    """
-    Runs once in a background thread before auto loop is allowed to drive.
-      1. Send STOP immediately
-      2. Wait for ESP32 READY
-      3. Wait for valid sensor readings (dist > 0)
-      4. Centre camera
-      5. Trigger initial scan
-      6. Switch mode to AUTO and set _system_ready
-    """
     global _system_ready
 
     def log(msg):
@@ -116,7 +86,6 @@ def _startup_sequence():
     esp32.send("STOP")
     time.sleep(0.2)
 
-    # 1. Wait for ESP32 READY
     log("Waiting for ESP32 READY...")
     deadline    = time.time() + STARTUP_ESP32_TIMEOUT
     esp32_ready = False
@@ -124,9 +93,7 @@ def _startup_sequence():
     while time.time() < deadline:
         esp32.send("HELLO")
         time.sleep(0.2)
-
         msg = esp32.get_latest_message()
-
         if msg and "ESP32 READY" in msg:
             esp32_ready = True
             break
@@ -134,7 +101,6 @@ def _startup_sequence():
     time.sleep(0.2)
     log("ESP32 READY confirmed" if esp32_ready else "WARNING: ESP32 READY not received")
 
-    # 2. Wait for valid sensor data
     log("Waiting for valid sensor readings...")
     valid_reads = 0
     attempts    = 0
@@ -159,24 +125,21 @@ def _startup_sequence():
     else:
         log("Sensor validated")
 
-    # 3. Centre camera
     log("Centering camera...")
     pantilt.center()
     time.sleep(0.5)
 
-    # 4. Initial scan for map context
     log("Running initial scan...")
     esp32.send("SCAN")
     time.sleep(STARTUP_SCAN_WAIT)
 
-    # 5. Done
     _system_ready = sensor_ok
     set_mode("AUTO")
     log("Startup complete — AUTO mode active" if sensor_ok
         else "Startup complete with warnings — sensor unhealthy, AUTO blocked")
 
 # ── mode state ────────────────────────────────────────────────────────────────
-_mode              = "MANUAL"   # starts MANUAL — _startup_sequence sets AUTO
+_mode              = "MANUAL"
 _mode_lock         = threading.Lock()
 _last_manual_input = 0.0
 
@@ -203,7 +166,6 @@ def touch_manual():
         _last_manual_input = time.time()
 
 # ── stub telemetry ────────────────────────────────────────────────────────────
-# Replace read_battery_stub() body when INA219 / MAX17043 is wired to Pi I2C.
 def read_battery_stub() -> dict:
     return {
         "voltage":  None,
@@ -213,8 +175,6 @@ def read_battery_stub() -> dict:
         "note":     "Battery monitor hardware not yet installed"
     }
 
-# Replace read_gyro_stub() body when MPU6050 / ICM-42688 is wired to Pi I2C
-# or when the ESP32 streams IMU data over UART.
 def read_gyro_stub() -> dict:
     return {
         "roll":  None,
@@ -225,37 +185,99 @@ def read_gyro_stub() -> dict:
         "note":  "IMU hardware not yet installed"
     }
 
+# ── latest parsed ESP32 status ────────────────────────────────────────────────
+# FIX-A: We maintain a parsed dict from the most recent STATUS response.
+# This is what the dashboard reads, not get_latest_message() which is
+# almost always "PONG" and therefore never contains "path=1".
+_esp_status_lock = threading.Lock()
+_esp_status = {
+    "dist":  -1.0,
+    "path":  0,     # 1 = clear, 0 = blocked
+    "dir":   0,
+    "fault": 0,
+    "raw":   "",
+}
+
+def _update_esp_status(msg: str):
+    """Parse a STATUS line and store it in _esp_status."""
+    # Expected format: STATUS dist=XX.X path=X dir=X fault=X
+    if not msg.startswith("STATUS"):
+        return
+    try:
+        parts = msg.split()
+        d = {}
+        for p in parts[1:]:
+            k, v = p.split("=")
+            d[k] = v
+        with _esp_status_lock:
+            _esp_status["dist"]  = float(d.get("dist",  _esp_status["dist"]))
+            _esp_status["path"]  = int(d.get("path",    _esp_status["path"]))
+            _esp_status["dir"]   = int(d.get("dir",     _esp_status["dir"]))
+            _esp_status["fault"] = int(d.get("fault",   _esp_status["fault"]))
+            _esp_status["raw"]   = msg
+    except Exception:
+        pass
+
+def get_esp_status() -> dict:
+    with _esp_status_lock:
+        return dict(_esp_status)
+
 # ── scan data store ───────────────────────────────────────────────────────────
 _scan_lock   = threading.Lock()
-_scan_latest = {}   # {angle_deg: dist_cm}
+_scan_latest = {}
 
 def _parse_scan_messages():
-    """
-    Watches ESP32 message history for SCAN lines.
-    Feeds both the occupancy map and rover_env scan readings.
-    Uses get_history() so no message is ever missed.
-    """
-    seen = set()   # track already-processed messages by content+index
+    seen = set()
     while True:
         for msg in esp32.get_history():
-            if msg.startswith("SCAN") and msg not in seen:
+            if msg not in seen:
                 seen.add(msg)
-                try:
-                    parts = msg.split()
-                    angle = int(parts[1].split("=")[1])
-                    dist  = float(parts[2].split("=")[1])
-                    with _scan_lock:
-                        _scan_latest[angle] = dist
-                    # Feed env so safe_action() has side distance data
-                    env.update_scan(angle, dist)
-                    # Feed occupancy map (angle relative to rover heading)
-                    occ_map.update_sweep({angle - 90: dist})
-                except Exception:
-                    pass
-        # Keep seen set from growing unbounded
+                if msg.startswith("SCAN"):
+                    try:
+                        parts = msg.split()
+                        angle = int(parts[1].split("=")[1])
+                        dist  = float(parts[2].split("=")[1])
+                        with _scan_lock:
+                            _scan_latest[angle] = dist
+                        env.update_scan(angle, dist)
+                        occ_map.update_sweep({angle - 90: dist})
+                    except Exception:
+                        pass
+                # FIX-A: parse STATUS messages into _esp_status as they arrive
+                elif msg.startswith("STATUS"):
+                    _update_esp_status(msg)
+
         if len(seen) > 200:
             seen.clear()
         time.sleep(0.05)
+
+# ── obstacle escape ───────────────────────────────────────────────────────────
+# FIX-D: centralised escape routine so both auto loop and any future
+# recovery path use the same behaviour.
+_escape_lock = threading.Lock()
+
+def _escape_from_obstacle():
+    """
+    Called when the rover is stuck against an obstacle in AUTO mode.
+    Sends BACKWARD for ESCAPE_BACKWARD_S seconds, then stops and scans
+    so the env/agent have fresh state before the next decision.
+    Acquires _escape_lock so concurrent calls collapse into one.
+    """
+    if not _escape_lock.acquire(blocking=False):
+        return   # another escape already in progress
+
+    try:
+        print("[AUTO] Obstacle escape — reversing")
+        esp32.send("BACKWARD")
+        time.sleep(ESCAPE_BACKWARD_S)
+        esp32.send("STOP")
+        time.sleep(0.1)
+        esp32.send("SCAN")
+        time.sleep(0.8)   # give scan time to complete before next agent step
+        esp32.send("STATUS")
+        time.sleep(0.2)
+    finally:
+        _escape_lock.release()
 
 # ── background threads ────────────────────────────────────────────────────────
 
@@ -265,14 +287,8 @@ def _ping_loop():
         time.sleep(PING_INTERVAL_S)
 
 def _esp_listener_loop():
-    """
-    Forwards ESP32 messages into the RL env.
-    Prioritises STATUS and OBSTACLE messages over PONG
-    so the env always has the most useful data.
-    """
     while True:
         history = esp32.get_history()
-        # Find the most recent meaningful message (not just PONG)
         for msg in reversed(history):
             if any(k in msg for k in ("STATUS", "OBSTACLE", "ERR", "SCAN")):
                 env.update_esp_message(msg)
@@ -280,10 +296,6 @@ def _esp_listener_loop():
         time.sleep(0.05)
 
 def _sensor_healthy() -> bool:
-    """
-    Returns True if any recent ESP32 message contains a valid distance.
-    Scans full history so PONG spam can't hide a valid STATUS response.
-    """
     for msg in reversed(esp32.get_history()):
         if "dist=" in msg:
             try:
@@ -294,29 +306,29 @@ def _sensor_healthy() -> bool:
     return False
 
 def _auto_loop():
-    # Wait until startup sequence has completed before doing anything
     while not _system_ready:
         time.sleep(0.5)
 
-    obs  = env.reset()
-    step = 0
+    obs              = env.reset()
+    step             = 0
+    obstacle_strikes = 0   # FIX-C: count consecutive obstacle responses
 
     while True:
         with _mode_lock:
             mode     = _mode
             last_inp = _last_manual_input
 
-        # ── idle timeout: MANUAL → AUTO ──────────────────────────────
+        # ── idle timeout ──────────────────────────────────────────────
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
                 print("[Mode] Idle timeout — resuming AUTO")
                 set_mode("AUTO")
                 obs = env.reset()
+                obstacle_strikes = 0
             time.sleep(0.5)
             continue
 
         # ── sensor health gate ────────────────────────────────────────
-        # Don't drive if sensor is returning -1.0 — would cause thrashing
         if not _sensor_healthy():
             print("[AUTO] Sensor unhealthy (dist=-1.0) — holding, requesting STATUS")
             esp32.send("STATUS")
@@ -325,13 +337,33 @@ def _auto_loop():
             continue
 
         # ── RL step ───────────────────────────────────────────────────
-        action = agent.select_action(obs)
+        action             = agent.select_action(obs)
         next_obs, reward, _, info = env.step(action)
         agent.store(obs, action, reward, next_obs)
         occ_map.move(action)
 
         if step % 5 == 0:
             esp32.send("STATUS")
+            time.sleep(0.05)   # brief yield so STATUS reply can arrive
+
+        # FIX-C: check the latest ESP32 response for OBSTACLE STOP.
+        # env.step() sends the command and we check what came back.
+        # "OBSTACLE STOP" is sent by the ESP32 when it refuses FORWARD.
+        latest_msg = esp32.get_latest_message() or ""
+
+        if "OBSTACLE" in latest_msg or "OBSTACLE STOP" in latest_msg:
+            obstacle_strikes += 1
+            print(f"[AUTO] Obstacle strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}")
+
+            if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
+                print("[AUTO] Max obstacle strikes — executing escape")
+                _escape_from_obstacle()
+                obs              = env.reset()
+                obstacle_strikes = 0
+                step             = 0
+        else:
+            # Any non-obstacle response resets the strike counter
+            obstacle_strikes = 0
 
         obs   = next_obs
         step += 1
@@ -367,6 +399,8 @@ def _generate_video():
 
 @app.route("/")
 def index():
+    # FIX-A: dashboard now reads /esp32_status for path/dist data,
+    # not the raw esp32_msg field which is almost always "PONG".
     return """<!DOCTYPE html>
 <html>
 <head>
@@ -393,6 +427,8 @@ def index():
             background: rgba(255,255,255,.03); border-radius: 6px; margin-top: 4px;
             font-size: 11px; }
     .stat span:last-child { color: #67e8f9; font-weight: 700; }
+    .path-clear   { color: #34d399 !important; }
+    .path-blocked { color: #f87171 !important; }
     #log { height: 160px; overflow-y: auto; background: rgba(0,0,0,.3);
            border-radius: 8px; padding: 8px; font-size: 10px; margin-top: 6px; }
     .log-line { border-bottom: 1px solid rgba(255,255,255,.04); padding: 2px 0; color: #94a3b8; }
@@ -423,34 +459,34 @@ def index():
       <h2 style="margin-top:12px">Drive</h2>
       <div class="btn-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px">
         <div></div>
-        <button onclick="cmd('forward')">▲ FWD</button>
+        <button onclick="cmd('forward')">&#9650; FWD</button>
         <div></div>
-        <button onclick="cmd('left')">◄ LEFT</button>
-        <button class="danger" onclick="cmd('stop')">■ STOP</button>
-        <button onclick="cmd('right')">RIGHT ►</button>
+        <button onclick="cmd('left')">&#9668; LEFT</button>
+        <button class="danger" onclick="cmd('stop')">&#9632; STOP</button>
+        <button onclick="cmd('right')">RIGHT &#9658;</button>
         <div></div>
-        <button onclick="cmd('backward')">▼ BACK</button>
+        <button onclick="cmd('backward')">&#9660; BACK</button>
         <div></div>
       </div>
     </div>
 
     <div class="panel">
       <h2>Gimbal</h2>
-      <div class="slider-row"><span>Pan</span><span id="pan-v">90°</span></div>
+      <div class="slider-row"><span>Pan</span><span id="pan-v">90&deg;</span></div>
       <input type="range" min="0" max="180" value="90" id="pan"
-             oninput="document.getElementById('pan-v').textContent=this.value+'°'"
+             oninput="document.getElementById('pan-v').textContent=this.value+'&deg;'"
              onchange="fetch('/cam/pan/'+this.value)">
-      <div class="slider-row" style="margin-top:8px"><span>Tilt</span><span id="tilt-v">90°</span></div>
+      <div class="slider-row" style="margin-top:8px"><span>Tilt</span><span id="tilt-v">90&deg;</span></div>
       <input type="range" min="15" max="145" value="90" id="tilt"
              style="accent-color:#fbbf24"
-             oninput="document.getElementById('tilt-v').textContent=this.value+'°'"
+             oninput="document.getElementById('tilt-v').textContent=this.value+'&deg;'"
              onchange="fetch('/cam/tilt/'+this.value)">
       <div class="btn-row" style="margin-top:8px">
         <button onclick="fetch('/cam/center');document.getElementById('pan').value=90;
                          document.getElementById('tilt').value=90;
-                         document.getElementById('pan-v').textContent='90°';
-                         document.getElementById('tilt-v').textContent='90°'">
-          ⊙ Center
+                         document.getElementById('pan-v').textContent='90&deg;';
+                         document.getElementById('tilt-v').textContent='90&deg;'">
+          &#8857; Center
         </button>
         <button onclick="fetch('/cmd/scan')">Scan</button>
       </div>
@@ -464,7 +500,7 @@ def index():
       <div class="stat"><span>System Ready</span><span id="t-ready">—</span></div>
       <div class="stat"><span>Agent Steps</span><span id="t-steps">—</span></div>
       <div class="stat"><span>Epsilon</span><span id="t-eps">—</span></div>
-      <div class="stat"><span>ESP32</span><span id="t-esp" style="font-size:9px;max-width:160px;overflow:hidden;text-overflow:ellipsis">—</span></div>
+      <div class="stat"><span>ESP32 raw</span><span id="t-esp" style="font-size:9px;max-width:160px;overflow:hidden;text-overflow:ellipsis">—</span></div>
     </div>
 
     <div class="panel">
@@ -493,7 +529,7 @@ def index():
     async function cmd(c) {
       const r = await fetch('/cmd/'+c);
       const d = await r.json();
-      addLog('CMD '+c.toUpperCase()+' → '+d.esp32, r.ok);
+      addLog('CMD '+c.toUpperCase()+' → '+(d.esp32||'sent'), r.ok);
     }
 
     async function setMode(m) {
@@ -502,25 +538,34 @@ def index():
       addLog('Mode → '+m);
     }
 
+    /* FIX-A: poll /esp32_status for distance + path (reliable parsed data),
+       and /status for agent/mode metadata. This keeps the telemetry panel
+       accurate even when PONG floods get_latest_message(). */
     async function poll() {
       try {
-        const r = await fetch('/status');
-        const d = await r.json();
+        const [sr, se] = await Promise.all([
+          fetch('/status').then(r => r.json()),
+          fetch('/esp32_status').then(r => r.json()),
+        ]);
+
         document.getElementById('online').className = 'up';
-        document.getElementById('t-dist').textContent =
-          d.esp32_msg && d.esp32_msg.includes('dist=')
-            ? d.esp32_msg.split('dist=')[1].split(' ')[0]+'cm' : '—';
-        document.getElementById('t-path').textContent =
-          d.esp32_msg && d.esp32_msg.includes('path=1') ? 'CLEAR' : 'BLOCKED';
-        document.getElementById('t-mode').textContent   = d.mode;
-        document.getElementById('t-ready').textContent  = d.system_ready ? 'YES' : 'NO';
-        document.getElementById('t-steps').textContent  = d.agent_steps;
-        document.getElementById('t-eps').textContent    = d.epsilon;
-        document.getElementById('t-esp').textContent    = d.esp32_msg || '—';
+
+        const dist  = se.dist >= 0 ? se.dist.toFixed(1)+'cm' : '—';
+        const pathOk = se.path === 1;
+        const pathEl = document.getElementById('t-path');
+        pathEl.textContent  = pathOk ? 'CLEAR' : 'BLOCKED';
+        pathEl.className    = pathOk ? 'path-clear' : 'path-blocked';
+
+        document.getElementById('t-dist').textContent   = dist;
+        document.getElementById('t-mode').textContent   = sr.mode;
+        document.getElementById('t-ready').textContent  = sr.system_ready ? 'YES' : 'NO';
+        document.getElementById('t-steps').textContent  = sr.agent_steps;
+        document.getElementById('t-eps').textContent    = sr.epsilon;
+        document.getElementById('t-esp').textContent    = se.raw || sr.esp32_msg || '—';
         document.getElementById('btn-auto').className   =
-          d.mode === 'AUTO' ? 'mode-active' : '';
+          sr.mode === 'AUTO' ? 'mode-active' : '';
         document.getElementById('btn-manual').className =
-          d.mode === 'MANUAL' ? 'mode-active' : '';
+          sr.mode === 'MANUAL' ? 'mode-active' : '';
         document.getElementById('map-img').src = '/map?t='+Date.now();
       } catch(e) {
         document.getElementById('online').className = '';
@@ -557,7 +602,7 @@ def status():
     return jsonify({
         "mode":          get_mode(),
         "system_ready":  _system_ready,
-        "startup_log":   _startup_log[-5:],   # last 5 startup messages
+        "startup_log":   _startup_log[-5:],
         "epsilon":       round(agent.epsilon, 3),
         "agent_steps":   agent.steps,
         "buffer_size":   len(agent.buffer),
@@ -569,18 +614,22 @@ def status():
         "scan":          scan,
     })
 
+# FIX-A: new endpoint that returns the cleanly parsed STATUS data,
+# separate from the noisy get_latest_message() stream.
+@app.route("/esp32_status")
+def esp32_status():
+    return jsonify(get_esp_status())
+
 # ── battery ───────────────────────────────────────────────────────────────────
 
 @app.route("/battery")
 def battery():
-    # Swap read_battery_stub() for real INA219/MAX17043 reads when wired
     return jsonify(read_battery_stub())
 
 # ── gyro ──────────────────────────────────────────────────────────────────────
 
 @app.route("/gyro")
 def gyro():
-    # Swap read_gyro_stub() for real MPU6050/ICM reads when wired
     return jsonify(read_gyro_stub())
 
 # ── mode ──────────────────────────────────────────────────────────────────────
@@ -597,14 +646,26 @@ def mode_switch(m):
 
 @app.route("/cmd/<cmd>")
 def send_cmd(cmd):
+    """
+    FIX-B: Only call set_mode("MANUAL") if we're currently in AUTO.
+    In the old code, set_mode("MANUAL") always ran, and its first action
+    is esp32.send("STOP") — so every button press sent STOP before the
+    real command, causing noticeable lag in manual driving.
+    """
     allowed = {
         "forward", "backward", "left", "right", "stop",
         "scan", "fault_clear"
     }
     if cmd.lower() not in allowed:
         return jsonify({"error": "invalid command"}), 400
-    set_mode("MANUAL")
-    touch_manual()
+
+    if get_mode() != "MANUAL":
+        # Transition from AUTO → MANUAL (this sends STOP once, intentionally)
+        set_mode("MANUAL")
+    else:
+        # Already MANUAL: just update the idle timer, do NOT send STOP
+        touch_manual()
+
     esp32.send(cmd.upper())
     return jsonify({"sent": cmd.upper(), "esp32": esp32.get_latest_message()})
 
@@ -626,7 +687,6 @@ def cam_control(direction):
 
 @app.route("/cam/pan/<int:angle>")
 def cam_pan_absolute(angle):
-    """Absolute pan angle for slider control (0–180)."""
     angle = max(0, min(180, angle))
     pantilt.set_angle(pantilt.PAN, angle)
     pantilt.pan_angle = angle
@@ -634,7 +694,6 @@ def cam_pan_absolute(angle):
 
 @app.route("/cam/tilt/<int:angle>")
 def cam_tilt_absolute(angle):
-    """Absolute tilt angle for slider control (15–145)."""
     angle = max(15, min(145, angle))
     pantilt.set_angle(pantilt.TILT, angle)
     pantilt.tilt_angle = angle
