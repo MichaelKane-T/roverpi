@@ -122,7 +122,7 @@ void motors_backward(uint8_t speed)
     motor_set_speed(speed, speed);
 }
 
-void motors_turn_left(uint8_t speed)
+void motors_turn_right(uint8_t speed)
 {
     gpio_set_level(TB_AIN1, 0);
     gpio_set_level(TB_AIN2, 1);
@@ -132,7 +132,7 @@ void motors_turn_left(uint8_t speed)
     motor_set_speed(speed, speed);
 }
 
-void motors_turn_right(uint8_t speed)
+void motors_turn_left(uint8_t speed)
 {
     gpio_set_level(TB_AIN1, 1);
     gpio_set_level(TB_AIN2, 0);

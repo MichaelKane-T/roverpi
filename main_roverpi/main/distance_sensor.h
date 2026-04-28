@@ -14,12 +14,12 @@ void distance_sensor_init(void);
  *
  * @return Distance in centimeters, or -1.0f on timeout/failure.
  */
-float distance_sensor_get_distance_cm(void);
+float get_distance_cm(void);
 
 /**
  * @brief Returns true if an obstacle is closer than threshold_cm.
  */
-bool distance_sensor_obstacle_detected(float threshold_cm);
+bool obstacle_detected(void);
 
 /**
  * @brief Initialize the scanner servo PWM.
@@ -27,14 +27,24 @@ bool distance_sensor_obstacle_detected(float threshold_cm);
 void scanner_servo_init(void);
 
 /**
- * @brief Set scanner servo angle from 0 to 180 degrees.
+ * @brief Set the scanner servo to a specific angle (0-180 degrees).
  */
-void scanner_servo_set_angle(uint8_t angle_deg);
+void scanner_servo_set_angle(int angle);
 
 /**
- * @brief Center scanner servo.
+ * @brief Center the scanner servo.
  */
 void scanner_servo_center(void);
+
+/**
+ * @brief Move the scanner servo to the left.
+ */
+void scanner_servo_left(void);
+
+/**
+ * @brief Move the scanner servo to the right.
+ */
+void scanner_servo_right(void);
 
 /**
  * @brief Sweep scanner servo left-center-right-center for test.

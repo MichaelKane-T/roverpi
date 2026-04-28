@@ -17,16 +17,17 @@
 #define SERVO_GPIO          GPIO_NUM_18
 #define SERVO_PWM_TIMER     LEDC_TIMER_1
 #define SERVO_PWM_CHANNEL   LEDC_CHANNEL_2
-#define SERVO_MIN_US        500
-#define SERVO_MAX_US        2500
 #define SERVO_FREQ_HZ       50
-
 #define SERVO_RES           LEDC_TIMER_14_BIT
-#define SERVO_MAX_DUTY      ((1 << 14) - 1)
+
+#define SERVO_MIN_DUTY      737
+#define SERVO_MAX_DUTY      1720
 
 /*------------------- HC-SR04 ----------------------*/
-#define TRIG_GPIO GPIO_NUM_4
-#define ECHO_GPIO GPIO_NUM_5
+#define TRIGGER_PIN GPIO_NUM_4
+#define ECHO_PIN GPIO_NUM_5
+#define TRIG_PULSE_US 10
+#define SPEED_OF_SOUND 343.0 // m/s
 
 /*------------------- TB6612FNG --------------------*/
 #define TB_STBY GPIO_NUM_14
