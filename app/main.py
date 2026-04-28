@@ -133,6 +133,13 @@ def _startup_sequence():
     esp32.send("SCAN")
     time.sleep(STARTUP_SCAN_WAIT)
 
+    # Prime the _esp_status cache so _sensor_healthy() returns True immediately
+    # on the first AUTO loop iteration — without this, the loop blocks on the
+    # health gate until the first step % 5 STATUS poll fires (which never comes
+    # because step never increments while health gate blocks).
+    esp32.send("STATUS")
+    time.sleep(0.4)
+
     _system_ready = sensor_ok
     set_mode("AUTO")
     log("Startup complete — AUTO mode active" if sensor_ok
@@ -296,14 +303,18 @@ def _esp_listener_loop():
         time.sleep(0.05)
 
 def _sensor_healthy() -> bool:
-    for msg in reversed(esp32.get_history()):
-        if "dist=" in msg:
-            try:
-                dist = float(msg.split("dist=")[1].split()[0])
-                return dist > 0.0
-            except Exception:
-                pass
-    return False
+    """
+    Use the parsed _esp_status cache — not raw history.
+    Raw history is flooded with PONG; STATUS messages are sparse.
+    Scanning history for "dist=" was almost always missing them,
+    causing the sensor-health gate to block AUTO permanently.
+    Returns True if we have ever received a valid (>0) distance reading.
+    """
+    with _esp_status_lock:
+        dist = _esp_status["dist"]
+    # -1.0 means we have never received a STATUS, or the last one timed out.
+    # 0.0 means sensor wiring error.  Anything positive is healthy.
+    return dist > 0.0
 
 def _auto_loop():
     while not _system_ready:
@@ -346,12 +357,18 @@ def _auto_loop():
             esp32.send("STATUS")
             time.sleep(0.05)   # brief yield so STATUS reply can arrive
 
-        # FIX-C: check the latest ESP32 response for OBSTACLE STOP.
-        # env.step() sends the command and we check what came back.
-        # "OBSTACLE STOP" is sent by the ESP32 when it refuses FORWARD.
-        latest_msg = esp32.get_latest_message() or ""
+        # ── obstacle detection ─────────────────────────────────────────
+        # Read from history instead of get_latest_message() — PONG floods
+        # latest_message every 0.4 s and would mask a real OBSTACLE STOP.
+        # We look at the most recent message that is NOT PONG/TOCK.
+        obstacle_now = False
+        for msg in reversed(esp32.get_history()):
+            if msg in ("PONG", "TOCK", ""):
+                continue
+            obstacle_now = "OBSTACLE" in msg
+            break
 
-        if "OBSTACLE" in latest_msg or "OBSTACLE STOP" in latest_msg:
+        if obstacle_now:
             obstacle_strikes += 1
             print(f"[AUTO] Obstacle strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}")
 
@@ -361,9 +378,9 @@ def _auto_loop():
                 obs              = env.reset()
                 obstacle_strikes = 0
                 step             = 0
-        else:
-            # Any non-obstacle response resets the strike counter
-            obstacle_strikes = 0
+        elif not obstacle_now and obstacle_strikes > 0:
+            # Only decay strikes on a positive OK response, not on PONG spam
+            obstacle_strikes = max(0, obstacle_strikes - 1)
 
         obs   = next_obs
         step += 1
