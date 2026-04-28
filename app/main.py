@@ -312,7 +312,7 @@ def _auto_path_safe() -> bool:
         if "dist=" in msg:
             try:
                 dist = float(msg.split("dist=")[1].split()[0])
-                return dist >= PI_AUTO_SAFE_DISTANCE_CM
+                return ((dist >= PI_AUTO_SAFE_DISTANCE_CM) or dist < 0.0)  # treat negative as unknown but likely clear
             except Exception:
                 pass
 

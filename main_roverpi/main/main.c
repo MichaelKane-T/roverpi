@@ -202,30 +202,36 @@ static void scan_task(void *arg)
          *------------------------------------------------------------*/
         scanner_servo_center();
 
+        // Guard mode logic inside scan_task
         float dist = get_distance_cm();
 
         STATE_LOCK();
         rover_state.distance_cm = dist;
 
         if (dist < 0.0f) {
+            // TIMEOUT CASE: In open rooms, the sound often doesn't bounce back.
+            // Instead of blocking, we should assume the path is clear if it times out.
             timeout_strikes++;
-
             if (timeout_strikes >= TIMEOUT_STRIKE_MAX) {
-                timeout_strikes = TIMEOUT_STRIKE_MAX;
-                rover_state.path_clear = false;
+                rover_state.path_clear = true;  // CHANGE THIS: Timeout = Open Space
             }
+        } else if (dist == 0.0f) {
+            // SENSOR ERROR CASE: Truly 0.0 is usually a wiring glitch.
+            rover_state.path_clear = false; 
         } else {
+            // NORMAL CASE
             timeout_strikes = 0;
             rover_state.path_clear = (dist > OBSTACLE_STOP_CM);
         }
         STATE_UNLOCK();
-
-        if (dist < 0.0f) {
+        if(timeout_strikes >= TIMEOUT_STRIKE_MAX) {
+            ESP_LOGD(TAG, "Open space detected (timeout strike %d)", timeout_strikes);
+        } else if (dist < 0.0f) {
             ESP_LOGD(TAG, "Distance timeout strike %d/%d", timeout_strikes, TIMEOUT_STRIKE_MAX);
         } else {
             ESP_LOGD(TAG, "Distance %.1f cm", dist);
         }
-
+    
         vTaskDelay(pdMS_TO_TICKS(GUARD_PERIOD_MS));
     }
 }
