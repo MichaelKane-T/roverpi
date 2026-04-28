@@ -19,7 +19,7 @@ float get_distance_cm(void);
 /**
  * @brief Returns true if an obstacle is closer than threshold_cm.
  */
-bool obstacle_detected(void);
+bool is_path_blocked(void);
 
 /**
  * @brief Initialize the scanner servo PWM.

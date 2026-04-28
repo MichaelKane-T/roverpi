@@ -30,15 +30,15 @@
 #include "motor_control.h"
 #include "esp_log.h"
 
-static const char *TAG = "ROVERPI_FSM";
+static const char *TAG = "ROVER_FSM";
 
-static rover_state_t     current_state = STATE_INIT;
-static control_mode_t    control_mode  = MODE_AUTO;
-static drive_direction_t current_dir   = DIR_STOP;
-static uint32_t          fwd_cnt       = 0;   /* forward step odometry */
+static rover_state_t current_state = STATE_INIT;
+static control_mode_t current_mode = MODE_MANUAL;
+static drive_direction_t current_direction = DIR_STOP;
 
-/* ── helpers ──────────────────────────────────────────────────────────────── */
-
+/*====================================================================
+ * Convert enum state to readable text for debugging logs.
+ *====================================================================*/
 static const char *state_name(rover_state_t s)
 {
     switch (s) {
@@ -53,15 +53,20 @@ static const char *state_name(rover_state_t s)
     }
 }
 
+/*====================================================================
+ * Change FSM state and log only when the state actually changes.
+ *====================================================================*/
 static void transition_to(rover_state_t next)
 {
     if (next != current_state) {
-        ESP_LOGI(TAG, "%s → %s", state_name(current_state), state_name(next));
+        ESP_LOGI(TAG, "%s -> %s", state_name(current_state), state_name(next));
         current_state = next;
     }
 }
 
-/* Map direction → target state. Returns STATE_STOP for DIR_STOP. */
+/*====================================================================
+ * Convert requested direction into target FSM state.
+ *====================================================================*/
 static rover_state_t dir_to_state(drive_direction_t dir)
 {
     switch (dir) {
@@ -69,43 +74,48 @@ static rover_state_t dir_to_state(drive_direction_t dir)
         case DIR_BACKWARD: return STATE_DRIVE_BACKWARD;
         case DIR_LEFT:     return STATE_TURN_LEFT;
         case DIR_RIGHT:    return STATE_TURN_RIGHT;
+        case DIR_STOP:
         default:           return STATE_STOP;
     }
 }
 
-/* ── public API ───────────────────────────────────────────────────────────── */
+/*=======================Public API=======================*/
 
 void roverpi_fsm_init(void)
 {
-    ESP_LOGI(TAG, "Initializing RoverPi FSM");
     current_state = STATE_INIT;
-    control_mode  = MODE_AUTO;
-    current_dir   = DIR_STOP;
-    fwd_cnt       = 0;
+    current_mode = MODE_MANUAL;
+    current_direction = DIR_STOP;
+
+    motors_stop();
+    transition_to(STATE_STOP);
 }
 
 void roverpi_set_mode(control_mode_t mode)
-{
-    if (mode != control_mode) {
-        ESP_LOGI(TAG, "Mode change: %d → %d", control_mode, mode);
-        control_mode = mode;
-        /* Always stop motors when handing over control */
-        transition_to(STATE_STOP);
-        current_dir = DIR_STOP;
-    }
+{   /* Always stop motors when handing over control */
+    transition_to(STATE_STOP);
+    current_dir = DIR_STOP;
+    current_mode = mode;
 }
 
 void roverpi_fault_clear(void)
 {
     if (current_state == STATE_FAULT) {
-        ESP_LOGW(TAG, "Fault cleared — returning to STOP");
         transition_to(STATE_STOP);
-        current_dir = DIR_STOP;
     }
+
+    current_direction = DIR_STOP;
+    motors_stop();
 }
 
 rover_state_t roverpi_get_state(void)
 {
+    return current_state;
+}
+
+rover_state_t roverpi_set_state(rover_state_t next)
+{
+    transition_to(next);
     return current_state;
 }
 
@@ -119,13 +129,18 @@ drive_direction_t roverpi_get_direction(void)
     return current_dir;
 }
 
-/* ── main tick ────────────────────────────────────────────────────────────── */
-
+/* The main FSM tick function. Call this periodically (e.g. every 100ms) with
+ * the latest sensor inputs and commands from the Pi.
+ *
+ * path_clear: true if no obstacle detected in front (for forward command)
+ * direction:   desired drive direction from Pi (DIR_STOP if no command)
+ * fault_detected: true if any fault condition detected (e.g. motor stall)
+ */
 void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detected)
 {
     current_dir = direction;
 
-    /* ── Transition logic ───────────────────────────────────────────────── */
+    /*==================Transition Logic=======================*/
     switch (current_state) {
 
         case STATE_INIT:
@@ -137,6 +152,7 @@ void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detec
                 transition_to(STATE_FAULT);
             } else if (direction == DIR_STOP) {
                 /* stay stopped */
+                transition_to(STATE_STOP);
             } else if (direction == DIR_FORWARD && !path_clear) {
                 /* Pi asked to go forward but path is blocked — stay stopped */
                 ESP_LOGW(TAG, "FORWARD blocked by obstacle");
@@ -183,6 +199,7 @@ void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detec
 
         case STATE_FAULT:
             /* Stays in FAULT until roverpi_fault_clear() called explicitly */
+            transition_to(STATE_FAULT);
             break;
 
         default:
@@ -190,7 +207,7 @@ void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detec
             break;
     }
 
-    /* ── Action logic ───────────────────────────────────────────────────── */
+    /*==================Action Logic=======================*/
     switch (current_state) {
 
         case STATE_INIT:
@@ -203,7 +220,6 @@ void roverpi_tick(bool path_clear, drive_direction_t direction, bool fault_detec
 
         case STATE_DRIVE_FORWARD:
             motors_forward(MOTOR_SPEED_CRUISE);
-            fwd_cnt++;
             break;
 
         case STATE_DRIVE_BACKWARD:
