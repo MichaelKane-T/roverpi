@@ -47,10 +47,10 @@ ACTION_CMDS = ["FORWARD", "LEFT", "RIGHT", "BACKWARD", "STOP"]
 OBS_DIM     = 13
 
 # ── reward weights ────────────────────────────────────────────────────────────
-R_FORWARD       =  1.0
-R_TURN          =  0.2
-R_BACKWARD      = -0.8    # stronger penalty — backward is a last resort
-R_STOP          = -0.1
+R_FORWARD       =  2.0
+R_TURN          = -0.05
+R_BACKWARD      = -1.0    # stronger penalty — backward is a last resort
+R_STOP          = -0.25
 R_OBSTACLE_NEAR = -2.0
 R_OBSTACLE_HIT  = -5.0
 R_REVISIT       = -0.5
