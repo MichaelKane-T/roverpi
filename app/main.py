@@ -64,7 +64,7 @@ from occupancy_map import OccupancyMap
 
 # ── configuration ─────────────────────────────────────────────────────────────
 IDLE_TIMEOUT_S        = 30.0
-PING_INTERVAL_S       = 0.3    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
+PING_INTERVAL_S       = 0.15    # must be well under ESP32 HEARTBEAT_TIMEOUT_MS (500ms)
 AUTO_STEP_HZ          = 4
 FRAME_W, FRAME_H      = 640, 480
 
