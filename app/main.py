@@ -288,11 +288,6 @@ def _escape_from_obstacle():
 
 # ── background threads ────────────────────────────────────────────────────────
 
-def _ping_loop():
-    while True:
-        esp32.send("PING")
-        time.sleep(PING_INTERVAL_S)
-
 def _esp_listener_loop():
     while True:
         history = esp32.get_history()
@@ -328,11 +323,19 @@ def _auto_loop():
     # Without this, a single OBSTACLE STOP stays in history forever and
     # the escape->scan loop never terminates even after the rover backs away.
     history_watermark = len(esp32.get_history())
+    last_ping = time.time()
 
     while True:
         with _mode_lock:
             mode     = _mode
             last_inp = _last_manual_input
+
+        # ── send PING on a fixed interval (replaces _ping_loop thread) ─
+        # PING is now only sent here so PONG never floods history between steps.
+        now = time.time()
+        if now - last_ping >= PING_INTERVAL_S:
+            esp32.send("PING")
+            last_ping = now
 
         # ── idle timeout ──────────────────────────────────────────────
         if mode == "MANUAL":
@@ -403,7 +406,6 @@ def _auto_loop():
         time.sleep(1.0 / AUTO_STEP_HZ)
 
 threading.Thread(target=_startup_sequence,    daemon=True).start()
-threading.Thread(target=_ping_loop,           daemon=True).start()
 threading.Thread(target=_esp_listener_loop,   daemon=True).start()
 threading.Thread(target=_auto_loop,           daemon=True).start()
 threading.Thread(target=_parse_scan_messages, daemon=True).start()
