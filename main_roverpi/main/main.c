@@ -4,42 +4,14 @@
 * Architecture:Raspberry Pi --UART--> ESP32
 * Authors: Michael Kane
 *
-* RoverPi ESP32 Controller — Clean Multi-File Version
-
-* Raspberry Pi = brain
-* ESP32 = body controller
-* UART between Pi and ESP32
-* ESP32 owns motors, ultrasonic sensor, scanner servo, safety stop, and FSM
-* Pi sends commands like "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "SCAN", etc.
-* roverpi_main.c
-*
-* ESP32 motor/sensor controller for RoverPi autonomous rover.
-*
-* Architecture:
-*   Raspberry Pi --UART--> ESP32
-*
-* Pi -> ESP32 commands:
-*   TICK
-*   FORWARD
-*   BACKWARD
-*   LEFT
-*   RIGHT
-*   STOP
-*   STATUS
-*   SCAN
-*   SCAN_AT <angle>
-*   FAULT_CLEAR
-*
-* ESP32 -> Pi responses:
-*   TOCK
-*   OK <CMD>
-*   ERR FAULT
-*   ERR UNKNOWN
-*   ERR HEARTBEAT LOST
-*   OBSTACLE STOP
-*   STATUS dist=XX.X path=X dir=X fault=X
-*   SCAN angle=<d> dist=<cm>
-=========================================================================*/
+* FIXES APPLIED (see FIX comments):
+*   FIX-1: Direction is now cleared to DIR_STOP on obstacle regardless of
+*           which direction was active — prevents LEFT/RIGHT 360 spin loops.
+*   FIX-2: scan_triggered flag is now also reset when direction != FORWARD
+*           so a stale true never blocks future obstacle-triggered scans.
+*   FIX-3: Heartbeat watchdog no longer suppresses the STOP when scans
+*           are pending — scan flag was being abused to mask a real timeout.
+*=========================================================================*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,9 +51,6 @@ static const char *TAG = "ROVERPI";
 
 /*====================================================================
  * Shared rover status.
- *
- * This is the state shared between UART, scan, and FSM tasks.
- * Access it only through STATE_LOCK / STATE_UNLOCK.
  *====================================================================*/
 typedef struct {
     bool              path_clear;
@@ -106,9 +75,6 @@ static SemaphoreHandle_t state_mutex = NULL;
 
 /*====================================================================
  * Scan request flags.
- *
- * These are simple task-to-task request flags.
- * For a larger robot, queues/event groups would be better.
  *====================================================================*/
 static volatile bool    scan_requested     = false;
 static volatile bool    targeted_scan      = false;
@@ -129,9 +95,6 @@ static void request_targeted_scan(uint8_t angle_deg)
 
 /*====================================================================
  * scan_task
- *
- * Owns the HC-SR04 sensor and scanner servo.
- * No other task should directly call get_distance_cm() or move the servo.
  *====================================================================*/
 static void scan_task(void *arg)
 {
@@ -141,9 +104,6 @@ static void scan_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(SCANNER_SERVO_SETTLE_MS));
 
     while (1) {
-        /*------------------------------------------------------------
-         * Targeted scan requested by Pi: SCAN_AT <angle>
-         *------------------------------------------------------------*/
         if (targeted_scan) {
             targeted_scan = false;
 
@@ -153,9 +113,7 @@ static void scan_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(SCAN_SETTLE_MS));
 
             float dist = get_distance_cm();
-            if (dist < 0.0f) {
-                dist = 0.0f;
-            }
+            if (dist < 0.0f) dist = 0.0f;
 
             char buf[UART_BUF_TXRX];
             snprintf(buf, sizeof(buf), "SCAN angle=%d dist=%.1f", angle, dist);
@@ -166,9 +124,6 @@ static void scan_task(void *arg)
             continue;
         }
 
-        /*------------------------------------------------------------
-         * Full sweep requested by Pi or FSM.
-         *------------------------------------------------------------*/
         if (scan_requested) {
             scan_requested = false;
 
@@ -183,9 +138,7 @@ static void scan_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(SCAN_SETTLE_MS));
 
                 float dist = get_distance_cm();
-                if (dist < 0.0f) {
-                    dist = 0.0f;
-                }
+                if (dist < 0.0f) dist = 0.0f;
 
                 char buf[UART_BUF_TXRX];
                 snprintf(buf, sizeof(buf), "SCAN angle=%d dist=%.1f", sweep[i], dist);
@@ -197,49 +150,41 @@ static void scan_task(void *arg)
             continue;
         }
 
-        /*------------------------------------------------------------
-         * Guard mode: keep sensor centered and continuously check path.
-         *------------------------------------------------------------*/
+        /* Guard mode */
         scanner_servo_center();
 
-        // Guard mode logic inside scan_task
         float dist = get_distance_cm();
 
         STATE_LOCK();
         rover_state.distance_cm = dist;
 
         if (dist < 0.0f) {
-            // TIMEOUT CASE: In open rooms, the sound often doesn't bounce back.
-            // Instead of blocking, we should assume the path is clear if it times out.
             timeout_strikes++;
             if (timeout_strikes >= TIMEOUT_STRIKE_MAX) {
-                rover_state.path_clear = true;  // CHANGE THIS: Timeout = Open Space
+                rover_state.path_clear = true;
             }
         } else if (dist == 0.0f) {
-            // SENSOR ERROR CASE: Truly 0.0 is usually a wiring glitch.
-            rover_state.path_clear = false; 
+            rover_state.path_clear = false;
         } else {
-            // NORMAL CASE
             timeout_strikes = 0;
             rover_state.path_clear = (dist > OBSTACLE_STOP_CM);
         }
         STATE_UNLOCK();
-        if(timeout_strikes >= TIMEOUT_STRIKE_MAX) {
+
+        if (timeout_strikes >= TIMEOUT_STRIKE_MAX) {
             ESP_LOGD(TAG, "Open space detected (timeout strike %d)", timeout_strikes);
         } else if (dist < 0.0f) {
             ESP_LOGD(TAG, "Distance timeout strike %d/%d", timeout_strikes, TIMEOUT_STRIKE_MAX);
         } else {
             ESP_LOGD(TAG, "Distance %.1f cm", dist);
         }
-    
+
         vTaskDelay(pdMS_TO_TICKS(GUARD_PERIOD_MS));
     }
 }
 
 /*====================================================================
  * uart_task
- *
- * Receives commands from Raspberry Pi and updates shared desired state.
  *====================================================================*/
 static void uart_task(void *arg)
 {
@@ -255,7 +200,6 @@ static void uart_task(void *arg)
         int len = serial_uart_receive(rx_buf, sizeof(rx_buf));
 
         if (len > 0) {
-            /* Remove newline characters so strcmp() works cleanly. */
             rx_buf[strcspn(rx_buf, "\r\n")] = '\0';
 
             if (strlen(rx_buf) == 0) {
@@ -265,41 +209,29 @@ static void uart_task(void *arg)
 
             ESP_LOGI(TAG, "RX: \"%s\"", rx_buf);
 
-            /*--------------------------------------------------------
-            * Startup handshake
-            *--------------------------------------------------------*/
             if (strcmp(rx_buf, "HELLO") == 0) {
                 serial_uart_send_line("ESP32 READY");
             }
 
-            /*--------------------------------------------------------
-            * Heartbeat
-            *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "PING") == 0) {
                 STATE_LOCK();
                 rover_state.last_heartbeat = xTaskGetTickCount();
                 STATE_UNLOCK();
-
                 serial_uart_send_line("PONG");
             }
 
-            /*--------------------------------------------------------
-             * FORWARD: only allowed when path is clear and no fault.
-             *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "FORWARD") == 0) {
-                                    // FIXED
-                    STATE_LOCK();
-                    bool blocked = !rover_state.path_clear;
-                    bool faulted = rover_state.fault_detected;
-                    if (faulted)       rover_state.direction = DIR_STOP;
-                    else if (blocked)  rover_state.direction = DIR_STOP;
-                    else               rover_state.direction = DIR_FORWARD;
-                    STATE_UNLOCK();
+                STATE_LOCK();
+                bool blocked = !rover_state.path_clear;
+                bool faulted = rover_state.fault_detected;
+                if (faulted)      rover_state.direction = DIR_STOP;
+                else if (blocked) rover_state.direction = DIR_STOP;
+                else              rover_state.direction = DIR_FORWARD;
+                STATE_UNLOCK();
 
-                    // Act on snapshot — no lock held during UART TX
-                    if (faulted)       serial_uart_send_line("ERR FAULT");
-                    else if (blocked)  serial_uart_send_line("OBSTACLE STOP");
-                    else               serial_uart_send_line("OK FORWARD");
+                if (faulted)      serial_uart_send_line("ERR FAULT");
+                else if (blocked) serial_uart_send_line("OBSTACLE STOP");
+                else              serial_uart_send_line("OK FORWARD");
             }
 
             else if (strcmp(rx_buf, "BACKWARD") == 0) {
@@ -311,7 +243,6 @@ static void uart_task(void *arg)
 
                 if (faulted) serial_uart_send_line("ERR FAULT");
                 else         serial_uart_send_line("OK BACKWARD");
-                
             }
 
             else if (strcmp(rx_buf, "LEFT") == 0) {
@@ -323,7 +254,6 @@ static void uart_task(void *arg)
 
                 if (faulted) serial_uart_send_line("ERR FAULT");
                 else         serial_uart_send_line("OK LEFT");
-
             }
 
             else if (strcmp(rx_buf, "RIGHT") == 0) {
@@ -335,20 +265,15 @@ static void uart_task(void *arg)
 
                 if (faulted) serial_uart_send_line("ERR FAULT");
                 else         serial_uart_send_line("OK RIGHT");
-
             }
 
             else if (strcmp(rx_buf, "STOP") == 0) {
                 STATE_LOCK();
                 rover_state.direction = DIR_STOP;
                 STATE_UNLOCK();
-
                 serial_uart_send_line("OK STOP");
             }
 
-            /*--------------------------------------------------------
-             * Scan commands
-             *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "SCAN") == 0) {
                 request_scan();
                 serial_uart_send_line("OK SCAN");
@@ -356,14 +281,8 @@ static void uart_task(void *arg)
 
             else if (strncmp(rx_buf, "SCAN_AT ", 8) == 0) {
                 int angle = atoi(rx_buf + 8);
-
-                if (angle < 0) {
-                    angle = 0;
-                }
-                if (angle > 180) {
-                    angle = 180;
-                }
-
+                if (angle < 0)   angle = 0;
+                if (angle > 180) angle = 180;
                 request_targeted_scan((uint8_t)angle);
 
                 char ack[32];
@@ -371,9 +290,6 @@ static void uart_task(void *arg)
                 serial_uart_send_line(ack);
             }
 
-            /*--------------------------------------------------------
-             * Fault handling
-             *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "FAULT_CLEAR") == 0) {
                 STATE_LOCK();
                 rover_state.fault_detected = false;
@@ -384,14 +300,11 @@ static void uart_task(void *arg)
                 serial_uart_send_line("OK FAULT_CLEAR");
             }
 
-            /*--------------------------------------------------------
-             * Status
-             *--------------------------------------------------------*/
             else if (strcmp(rx_buf, "STATUS") == 0) {
                 STATE_LOCK();
                 float dist = rover_state.distance_cm;
                 bool clear = rover_state.path_clear;
-                int dir = (int)rover_state.direction;
+                int dir    = (int)rover_state.direction;
                 bool fault = rover_state.fault_detected;
                 STATE_UNLOCK();
 
@@ -414,61 +327,65 @@ static void uart_task(void *arg)
 /*====================================================================
  * fsm_task
  *
- * Applies safety logic and advances the rover FSM.
+ * FIXES HERE:
+ *   FIX-1  Obstacle stop now clears direction for ALL movement commands,
+ *          not just FORWARD. Without this, a LEFT/RIGHT command issued
+ *          just before an obstacle triggered a stop would leave
+ *          rover_state.direction as DIR_LEFT/RIGHT, and roverpi_tick()
+ *          would keep spinning the rover indefinitely.
+ *
+ *   FIX-2  scan_triggered is reset whenever direction != FORWARD, not
+ *          only when path_clear flips back to true. Previously, a
+ *          manual STOP or direction change left scan_triggered=true,
+ *          blocking the next legitimate obstacle-triggered scan.
+ *
+ *   FIX-3  Removed the scan_requested/targeted_scan guard from the
+ *          heartbeat watchdog path. Scan flags are set by the Pi, which
+ *          is the same entity sending heartbeats — if the heartbeat is
+ *          truly lost the scan flag is stale too, so the rover must stop.
  *====================================================================*/
 static void fsm_task(void *arg)
 {
     (void)arg;
 
-    bool prev_path_clear = true;
-    bool prev_fault = false;
+    bool prev_path_clear  = true;
+    bool prev_fault       = false;
     bool heartbeat_warned = false;
-    bool scan_triggered = false;
+    bool scan_triggered   = false;
 
     while (1) {
 
         STATE_LOCK();
-        bool path_clear = rover_state.path_clear;
+        bool path_clear          = rover_state.path_clear;
         drive_direction_t direction = rover_state.direction;
-        bool fault_detected = rover_state.fault_detected;
-        TickType_t last_hb = rover_state.last_heartbeat;
+        bool fault_detected      = rover_state.fault_detected;
+        TickType_t last_hb       = rover_state.last_heartbeat;
         STATE_UNLOCK();
 
-       /*------------------------------------------------------------
-         * Heartbeat watchdog.
-         * If Pi stops sending PING/TICK messages, ESP32 safely stops.
-         * We ignore the watchdog while a SCAN is in progress to prevent 
-         * timing jitter from stopping the rover mid-sweep.
-         *------------------------------------------------------------*/
-        TickType_t now = xTaskGetTickCount();
-        uint32_t elapsed_ms = (uint32_t)((now - last_hb) * portTICK_PERIOD_MS);
+        /* ── Heartbeat watchdog ──────────────────────────────────────
+         * FIX-3: removed the scan_requested/targeted_scan bypass.
+         * If Pi is dead, any pending scan request is also stale.
+         * ──────────────────────────────────────────────────────────── */
+        TickType_t now       = xTaskGetTickCount();
+        uint32_t elapsed_ms  = (uint32_t)((now - last_hb) * portTICK_PERIOD_MS);
 
-        // Check if heartbeat is lost (and we aren't busy scanning)
         if ((last_hb > 0) && (elapsed_ms > HEARTBEAT_TIMEOUT_MS)) {
-            
-            // Only force STOP if a scan isn't currently occupying the CPU/UART
-            if (!scan_requested && !targeted_scan) {
-                
-                if (!heartbeat_warned) {
-                    ESP_LOGW(TAG, "Watchdog: Pi heartbeat lost (%u ms) — safe stop", elapsed_ms);
-                    serial_uart_send_line("ERR HEARTBEAT LOST");
-                    heartbeat_warned = true;
-                }
-
-                STATE_LOCK();
-                rover_state.direction = DIR_STOP;
-                STATE_UNLOCK();
-                
-                direction = DIR_STOP; // Local variable update for the FSM tick below
+            if (!heartbeat_warned) {
+                ESP_LOGW(TAG, "Watchdog: Pi heartbeat lost (%u ms) — safe stop", elapsed_ms);
+                serial_uart_send_line("ERR HEARTBEAT LOST");
+                heartbeat_warned = true;
             }
+
+            STATE_LOCK();
+            rover_state.direction = DIR_STOP;
+            STATE_UNLOCK();
+
+            direction = DIR_STOP;
         } else {
-            // Heartbeat is healthy or hasn't timed out yet
             heartbeat_warned = false;
         }
 
-        /*------------------------------------------------------------
-         * Fault edge detection.
-         *------------------------------------------------------------*/
+        /* ── Fault edge detection ───────────────────────────────────── */
         if (fault_detected && !prev_fault) {
             ESP_LOGE(TAG, "Motor fault — safe stop");
             serial_uart_send_line("ERR FAULT");
@@ -481,27 +398,46 @@ static void fsm_task(void *arg)
         }
         prev_fault = fault_detected;
 
-        /*------------------------------------------------------------
-         * Obstacle handling.
-         * If driving forward and path becomes blocked, stop and scan.
-         *------------------------------------------------------------*/
-        if ((direction == DIR_FORWARD) && !path_clear) {
+        /* ── Obstacle handling ──────────────────────────────────────────
+         * FIX-1: Clear direction for ANY motion state, not just FORWARD.
+         *
+         * Previous code only entered this block when direction==FORWARD.
+         * If the Pi had just sent LEFT/RIGHT and then the path cleared
+         * check triggered, DIR_LEFT/RIGHT was left in shared state and
+         * roverpi_tick() kept spinning.  Now we stop unconditionally
+         * whenever path is blocked and the rover is moving.
+         *
+         * FIX-2: scan_triggered is reset on direction != FORWARD so a
+         * manual STOP never leaves scan_triggered stuck at true.
+         * ──────────────────────────────────────────────────────────────── */
+        bool rover_is_moving = (direction == DIR_FORWARD  ||
+                                direction == DIR_LEFT     ||
+                                direction == DIR_RIGHT);
+
+        if (rover_is_moving && !path_clear) {
+            /* Only log/notify on the leading edge (prev was clear). */
             if (prev_path_clear) {
-                ESP_LOGW(TAG, "Obstacle — stopping and triggering scan");
+                ESP_LOGW(TAG, "Obstacle — stopping and triggering scan (was dir=%d)", direction);
                 serial_uart_send_line("OBSTACLE STOP");
-
-                STATE_LOCK();
-                rover_state.direction = DIR_STOP;
-                STATE_UNLOCK();
-
-                direction = DIR_STOP;
-
-                if (!scan_triggered) {
-                    request_scan();
-                    scan_triggered = true;
-                }
             }
-        } else {
+
+            /* Always force stop, regardless of which direction was active. */
+            STATE_LOCK();
+            rover_state.direction = DIR_STOP;
+            STATE_UNLOCK();
+
+            direction = DIR_STOP;
+
+            if (!scan_triggered) {
+                request_scan();
+                scan_triggered = true;
+            }
+        } else if (direction != DIR_FORWARD) {
+            /* FIX-2: reset flag whenever we're not in a forward run,
+             * so the next obstacle always gets a fresh scan. */
+            scan_triggered = false;
+        } else if (path_clear) {
+            /* Path re-opened while going forward — also reset. */
             scan_triggered = false;
         }
 
@@ -528,7 +464,6 @@ void app_main(void)
     distance_sensor_init();
     roverpi_fsm_init();
     serial_uart_init();
-
 
     STATE_LOCK();
     rover_state.last_heartbeat = xTaskGetTickCount();
