@@ -322,7 +322,12 @@ def _auto_loop():
 
     obs              = env.reset()
     step             = 0
-    obstacle_strikes = 0   # FIX-C: count consecutive obstacle responses
+    obstacle_strikes = 0
+
+    # Watermark: only inspect messages that arrived AFTER this index.
+    # Without this, a single OBSTACLE STOP stays in history forever and
+    # the escape->scan loop never terminates even after the rover backs away.
+    history_watermark = len(esp32.get_history())
 
     while True:
         with _mode_lock:
@@ -335,7 +340,8 @@ def _auto_loop():
                 print("[Mode] Idle timeout — resuming AUTO")
                 set_mode("AUTO")
                 obs = env.reset()
-                obstacle_strikes = 0
+                obstacle_strikes  = 0
+                history_watermark = len(esp32.get_history())
             time.sleep(0.5)
             continue
 
@@ -355,18 +361,22 @@ def _auto_loop():
 
         if step % 5 == 0:
             esp32.send("STATUS")
-            time.sleep(0.05)   # brief yield so STATUS reply can arrive
+            time.sleep(0.05)
 
-        # ── obstacle detection ─────────────────────────────────────────
-        # Read from history instead of get_latest_message() — PONG floods
-        # latest_message every 0.4 s and would mask a real OBSTACLE STOP.
-        # We look at the most recent message that is NOT PONG/TOCK.
+        # ── obstacle detection (watermarked) ──────────────────────────
+        # Only look at messages that arrived since the last check.
+        # Never re-read old history entries.
+        history           = esp32.get_history()
+        new_msgs          = history[history_watermark:]
+        history_watermark = len(history)
+
         obstacle_now = False
-        for msg in reversed(esp32.get_history()):
+        for msg in new_msgs:
             if msg in ("PONG", "TOCK", ""):
                 continue
-            obstacle_now = "OBSTACLE" in msg
-            break
+            if "OBSTACLE" in msg:
+                obstacle_now = True
+                break
 
         if obstacle_now:
             obstacle_strikes += 1
@@ -375,11 +385,13 @@ def _auto_loop():
             if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
                 print("[AUTO] Max obstacle strikes — executing escape")
                 _escape_from_obstacle()
-                obs              = env.reset()
-                obstacle_strikes = 0
-                step             = 0
-        elif not obstacle_now and obstacle_strikes > 0:
-            # Only decay strikes on a positive OK response, not on PONG spam
+                obs               = env.reset()
+                obstacle_strikes  = 0
+                step              = 0
+                # Advance watermark past all the OBSTACLE/SCAN messages
+                # generated during the escape so they don't re-trigger.
+                history_watermark = len(esp32.get_history())
+        elif obstacle_strikes > 0:
             obstacle_strikes = max(0, obstacle_strikes - 1)
 
         obs   = next_obs
