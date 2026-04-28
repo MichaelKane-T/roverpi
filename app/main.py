@@ -294,18 +294,11 @@ def _sensor_healthy() -> bool:
     return False
 
 PI_AUTO_SAFE_DISTANCE_CM = 25.0
-_SENSOR_FAILURE_THRESHOLD = 5
+_SENSOR_FAILURE_THRESHOLD = 3
 _consecutive_sensor_failures = 0
 
 
 def _get_latest_distance_cm():
-    """
-    Returns the latest valid distance from recent STATUS messages.
-
-    Returns:
-        float distance in cm  -> valid sensor reading
-        None                  -> no recent STATUS or invalid/-1 reading
-    """
     history = esp32.get_history()
 
     for msg in reversed(history[-10:]):
@@ -313,7 +306,7 @@ def _get_latest_distance_cm():
             try:
                 dist = float(msg.split("dist=")[1].split()[0])
 
-                if dist < 0.0:
+                if dist < 0:
                     return None
 
                 return dist
@@ -322,6 +315,34 @@ def _get_latest_distance_cm():
                 return None
 
     return None
+
+
+def _recover_from_block():
+    print("[AUTO] Recovery mode")
+
+    esp32.send("STOP")
+    time.sleep(0.3)
+
+    # reverse slightly
+    esp32.send("BACKWARD")
+    time.sleep(0.6)
+
+    esp32.send("STOP")
+    time.sleep(0.3)
+
+    # scan
+    esp32.send("SCAN")
+    time.sleep(1.5)
+
+    # pick random turn
+    import random
+    turn = random.choice(["LEFT", "RIGHT"])
+
+    esp32.send(turn)
+    time.sleep(0.6)
+
+    esp32.send("STOP")
+    time.sleep(0.2)
 
 
 def _auto_loop():
@@ -338,7 +359,6 @@ def _auto_loop():
             mode = _mode
             last_inp = _last_manual_input
 
-        # MANUAL mode: user controls rover.
         if mode == "MANUAL":
             if time.time() - last_inp > IDLE_TIMEOUT_S:
                 print("[Mode] Idle timeout — resuming AUTO")
@@ -348,46 +368,37 @@ def _auto_loop():
             time.sleep(0.5)
             continue
 
-        # Ask ESP32 for fresh sensor state often.
-        if step % 3 == 0:
-            esp32.send("STATUS")
-
+        esp32.send("STATUS")
         dist = _get_latest_distance_cm()
 
-        # Case 1: no valid distance available.
+        # no reading
         if dist is None:
             _consecutive_sensor_failures += 1
 
-            print(
-                f"[AUTO] No valid distance "
-                f"{_consecutive_sensor_failures}/{_SENSOR_FAILURE_THRESHOLD}"
-            )
-
-            esp32.send("STATUS")
-
             if _consecutive_sensor_failures >= _SENSOR_FAILURE_THRESHOLD:
-                print("[AUTO] Sensor uncertain — stopping and scanning")
-                esp32.send("STOP")
-                esp32.send("SCAN")
-                time.sleep(1.5)
+                _recover_from_block()
+                _consecutive_sensor_failures = 0
             else:
                 time.sleep(0.25)
 
             continue
 
-        # Case 2: distance is valid but too close.
+        # blocked
         if dist < PI_AUTO_SAFE_DISTANCE_CM:
             _consecutive_sensor_failures += 1
 
-            print(f"[AUTO] Path blocked: {dist:.1f} cm — stopping and scanning")
+            print(f"[AUTO] Blocked at {dist:.1f} cm")
 
-            esp32.send("STOP")
-            esp32.send("SCAN")
-            time.sleep(1.5)
+            if _consecutive_sensor_failures >= _SENSOR_FAILURE_THRESHOLD:
+                _recover_from_block()
+                _consecutive_sensor_failures = 0
+            else:
+                esp32.send("STOP")
+                time.sleep(0.3)
 
             continue
 
-        # Case 3: distance is valid and safe.
+        # clear path
         _consecutive_sensor_failures = 0
 
         action = agent.select_action(obs)
