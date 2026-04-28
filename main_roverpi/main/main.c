@@ -428,26 +428,35 @@ static void fsm_task(void *arg)
         TickType_t last_hb = rover_state.last_heartbeat;
         STATE_UNLOCK();
 
-        /*------------------------------------------------------------
+       /*------------------------------------------------------------
          * Heartbeat watchdog.
-         * If Pi stops sending TICK messages, ESP32 safely stops.
+         * If Pi stops sending PING/TICK messages, ESP32 safely stops.
+         * We ignore the watchdog while a SCAN is in progress to prevent 
+         * timing jitter from stopping the rover mid-sweep.
          *------------------------------------------------------------*/
         TickType_t now = xTaskGetTickCount();
-        uint32_t elapsed_ms = (uint32_t)((now - last_hb) * (uint64_t)portTICK_PERIOD_MS);
+        uint32_t elapsed_ms = (uint32_t)((now - last_hb) * portTICK_PERIOD_MS);
 
+        // Check if heartbeat is lost (and we aren't busy scanning)
         if ((last_hb > 0) && (elapsed_ms > HEARTBEAT_TIMEOUT_MS)) {
-            if (!heartbeat_warned) {
-                ESP_LOGW(TAG, "Pi heartbeat lost — safe stop");
-                serial_uart_send_line("ERR HEARTBEAT LOST");
-                heartbeat_warned = true;
+            
+            // Only force STOP if a scan isn't currently occupying the CPU/UART
+            if (!scan_requested && !targeted_scan) {
+                
+                if (!heartbeat_warned) {
+                    ESP_LOGW(TAG, "Watchdog: Pi heartbeat lost (%u ms) — safe stop", elapsed_ms);
+                    serial_uart_send_line("ERR HEARTBEAT LOST");
+                    heartbeat_warned = true;
+                }
+
+                STATE_LOCK();
+                rover_state.direction = DIR_STOP;
+                STATE_UNLOCK();
+                
+                direction = DIR_STOP; // Local variable update for the FSM tick below
             }
-
-            STATE_LOCK();
-            rover_state.direction = DIR_STOP;
-            STATE_UNLOCK();
-
-            direction = DIR_STOP;
         } else {
+            // Heartbeat is healthy or hasn't timed out yet
             heartbeat_warned = false;
         }
 
