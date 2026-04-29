@@ -130,10 +130,12 @@ _scan_latest = {}
 
 _esp_status_lock = threading.Lock()
 _esp_status = {
-    "dist": -2.0,   # -2.0 means no STATUS received yet
-    "path": 0,      # 1 = clear, 0 = blocked
+    "dist": -2.0,
+    "path": 0,
     "dir": 0,
     "fault": 0,
+    "yaw": 0.0,
+    "gz": 0.0,
     "raw": "",
 }
 
@@ -254,6 +256,8 @@ def _update_esp_status(msg: str):
             _esp_status["path"] = int(parsed.get("path", _esp_status["path"]))
             _esp_status["dir"] = int(parsed.get("dir", _esp_status["dir"]))
             _esp_status["fault"] = int(parsed.get("fault", _esp_status["fault"]))
+            _esp_status["yaw"] = float(parsed.get("yaw", _esp_status["yaw"]))
+            _esp_status["gz"] = float(parsed.get("gz", _esp_status["gz"]))
             _esp_status["raw"] = msg
 
     except Exception as e:
