@@ -63,7 +63,7 @@ from app_flask import create_app
 # =============================================================================
 
 IDLE_TIMEOUT_S = 30.0
-PING_INTERVAL_S = 0.4
+PING_INTERVAL_S = 1.0
 AUTO_STEP_HZ = 4
 
 FRAME_W = 640
@@ -334,7 +334,7 @@ def _startup_sequence():
 
     while valid_reads < STARTUP_SENSOR_CHECKS and attempts < 10:
         esp32.send("STATUS")
-        time.sleep(0.4)
+        time.sleep(0.8)
 
         for msg in reversed(esp32.get_history()):
             if msg.startswith("STATUS"):
