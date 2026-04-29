@@ -1,0 +1,20 @@
+# RoverPi Pi Zero 2W requirements
+# Install order matters on Zero 2W — numpy first
+
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Flask==3.0.3
+pyserial==3.5
+smbus2==0.4.3
+picamera2           # installed via apt: sudo apt install -y python3-picamera2
+
+# TensorFlow Lite runtime (inference only — much lighter than full TF)
+# Install via:
+#   pip install tflite-runtime --extra-index-url https://google-coral.github.io/py-repo/
+tflite-runtime
+
+# Full TensorFlow for training (background thread)
+# On Zero 2W, use the community build:
+#   pip install https://github.com/PINTO0309/Tensorflow-bin/releases/download/v2.14.0/tensorflow-2.14.0-cp311-none-linux_aarch64.whl
+# Or train on a PC and copy model.keras + model.tflite to the Pi
+tensorflow  # replace with community wheel URL above on actual Zero 2W
