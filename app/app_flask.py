@@ -104,9 +104,9 @@ def create_app(ctx):
     # Expected project layout:
     #
     # roverpi/
-    # ├── main.py
-    # ├── app_flask.py
-    # └── app/
+    #   └── app/
+    #     ├── main.py
+    #     ├── app_flask.py
     #     └── frontend/
     #         └── dist/
     #             ├── index.html
@@ -115,7 +115,7 @@ def create_app(ctx):
     # Flask serves index.html and the compiled static assets from here.
     # -------------------------------------------------------------------------
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DIST_DIR = os.path.join(BASE_DIR, "app", "frontend", "dist")
+    DIST_DIR = os.path.join(BASE_DIR, "frontend", "dist")
     ASSETS_DIR = os.path.join(DIST_DIR, "assets")
 
     app = Flask(

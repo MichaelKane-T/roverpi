@@ -522,7 +522,7 @@ void app_main(void)
     xTaskCreate(uart_task, "uart", STACK_SIZE, NULL, PRIORITY_UART, NULL);
     xTaskCreate(gyro_task, "gyro", STACK_SIZE, NULL, PRIORITY_GYRO, NULL);
     xTaskCreate(scan_task, "scan", STACK_SIZE, NULL, PRIORITY_SCAN, NULL);
-    //xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
+    xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
 
     ESP_LOGI(TAG, "All RoverPi tasks running");
 }
