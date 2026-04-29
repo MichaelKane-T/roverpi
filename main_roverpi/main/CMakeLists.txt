@@ -1,5 +1,6 @@
 idf_component_register(SRCS 
                           "main.c"
+                          "gyroscope.c"
                           "motor_control.c"
                           "distance_sensor.c"
                           "roverpi_fsm.c"

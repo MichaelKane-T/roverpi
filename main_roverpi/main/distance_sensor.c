@@ -130,6 +130,7 @@ void distance_sensor_init(void)
     ESP_ERROR_CHECK(gpio_config(&echo_conf));
 
     scanner_servo_init();
+    scanner_servo_sweep_test();
 
     ESP_LOGI(TAG, "Distance sensor ready: TRIG=%d ECHO=%d",
              TRIGGER_PIN, ECHO_PIN);

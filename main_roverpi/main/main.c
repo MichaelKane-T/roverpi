@@ -24,12 +24,14 @@
 
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 
 #include "hardware_config.h"
 #include "motor_control.h"
 #include "distance_sensor.h"
 #include "roverpi_fsm.h"
 #include "serial_uart.h"
+#include "gyroscope.h"
 
 static const char *TAG = "ROVERPI";
 
@@ -46,6 +48,7 @@ static const char *TAG = "ROVERPI";
 #define PRIORITY_UART           7
 #define PRIORITY_SCAN           6
 #define PRIORITY_FSM            5
+#define PRIORITY_GYRO           4
 
 #define TIMEOUT_STRIKE_MAX      3
 
@@ -308,10 +311,11 @@ static void uart_task(void *arg)
                 bool fault = rover_state.fault_detected;
                 STATE_UNLOCK();
 
-                char status[96];
-                snprintf(status, sizeof(status),
-                         "STATUS dist=%.1f path=%d dir=%d fault=%d",
-                         dist, clear, dir, fault);
+                char status[128];
+                float yaw = mpu6050_get_yaw_deg();
+                float gz  = mpu6050_get_gz_dps();
+
+                snprintf(status, sizeof(status),"STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f",dist, clear, dir, fault, yaw, gz);
                 serial_uart_send_line(status);
             }
 
@@ -321,6 +325,52 @@ static void uart_task(void *arg)
         }
 
         vTaskDelay(pdMS_TO_TICKS(UART_TASK_PERIOD_MS));
+    }
+}
+
+/*====================================================================
+ * GYRO_TASK
+ *====================================================================*/
+void gyro_task(void *arg)
+{
+    (void)arg;
+
+    esp_err_t ret;
+
+    ret = i2c_master_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C for MPU6050: %s", esp_err_to_name(ret));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ret = mpu6050_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize MPU6050: %s", esp_err_to_name(ret));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ret = mpu6050_calibrate_gyro();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to calibrate MPU6050: %s", esp_err_to_name(ret));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "MPU6050 gyro task started");
+
+    while (1) {
+        mpu6050_update_yaw();
+
+        ESP_LOGI(
+            TAG,
+            "Yaw=%.2f deg | GZ=%.2f deg/s",
+            mpu6050_get_yaw_deg(),
+            mpu6050_get_gz_dps()
+        );
+
+        vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
     }
 }
 
@@ -469,11 +519,10 @@ void app_main(void)
     rover_state.last_heartbeat = xTaskGetTickCount();
     STATE_UNLOCK();
 
-    scanner_servo_sweep_test();
-
     xTaskCreate(uart_task, "uart", STACK_SIZE, NULL, PRIORITY_UART, NULL);
+    xTaskCreate(gyro_task, "gyro", STACK_SIZE, NULL, PRIORITY_GYRO, NULL);
     xTaskCreate(scan_task, "scan", STACK_SIZE, NULL, PRIORITY_SCAN, NULL);
-    xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
+    //xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
 
     ESP_LOGI(TAG, "All RoverPi tasks running");
 }
