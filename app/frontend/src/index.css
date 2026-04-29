@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #05070b;
+  color: rgb(226 232 240);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+button {
+  cursor: pointer;
+}
+
+.range-base {
+  width: 100%;
+  appearance: none;
+  background: transparent;
+}
+
+.range-base::-webkit-slider-runnable-track {
+  height: 0.375rem;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.range-base::-moz-range-track {
+  height: 0.375rem;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.range-pan::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 1rem;
+  width: 1rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(125, 211, 252, 0.7);
+  background: #7dd3fc;
+}
+
+.range-pan::-moz-range-thumb {
+  height: 1rem;
+  width: 1rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(125, 211, 252, 0.7);
+  background: #7dd3fc;
+}
+
+.range-tilt::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 1rem;
+  width: 1rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(251, 191, 36, 0.7);
+  background: #fbbf24;
+}
+
+.range-tilt::-moz-range-thumb {
+  height: 1rem;
+  width: 1rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(251, 191, 36, 0.7);
+  background: #fbbf24;
+}
