@@ -46,6 +46,9 @@ Do NOT run app_flask.py directly.
 
 import time
 import threading
+import os
+import json
+import math
 from types import SimpleNamespace
 
 from picamera2 import Picamera2
@@ -80,6 +83,16 @@ OBSTACLE_STRIKE_MAX = 3
 # Predator Mode behavior
 PREDATOR_ACTION_HOLD_STEPS = 3
 PREDATOR_FORWARD_BIAS = True
+
+# Training data logging
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+EXPERIENCE_LOG = os.path.join(DATA_DIR, "experience.jsonl")
+LOG_EXPERIENCE = True
+
+# Gyro reward shaping / safety
+GYRO_SPIN_DPS = 120.0
+INVALID_DISTANCE_PENALTY = 1.0
+SPIN_PENALTY = 2.0
 
 
 # =============================================================================
@@ -379,11 +392,13 @@ def _startup_sequence():
     _system_ready = sensor_ok
 
     if sensor_ok:
-        set_mode("AUTO")
-        log("Startup complete — AUTO mode active")
+        # Safer default while training: do not let the random/early model drive immediately.
+        set_mode("MANUAL")
+        esp32.send("STOP")
+        log("Startup complete — MANUAL mode active, AUTO available from dashboard")
     else:
         set_mode("MANUAL")
-        log("Startup complete with warnings — AUTO blocked until sensor is healthy")
+        log("Startup complete with warnings — AUTO BLOCKED, MANUAL mode active")
 
 
 # =============================================================================
@@ -518,6 +533,136 @@ def _escape_from_obstacle():
         _escape_lock.release()
 
 
+
+# =============================================================================
+# Learning Data Logging
+# =============================================================================
+
+def _angle_to_sin_cos(yaw_deg: float):
+    """
+    Convert yaw into sin/cos.
+
+    This is better for ML than raw degrees because 359° and 0° are nearly the
+    same heading, but numerically they look far apart.
+    """
+    yaw_rad = math.radians(float(yaw_deg))
+    return math.sin(yaw_rad), math.cos(yaw_rad)
+
+
+def _json_safe(value):
+    """Convert numpy values/lists into JSON-safe Python types."""
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def _build_learning_state(obs, esp_st: dict, last_action: int) -> dict:
+    """
+    Build the state that will be written to data/experience.jsonl.
+
+    This keeps RoverEnv untouched for now, but records gyro/heading telemetry
+    so the home server can train from it.
+    """
+    yaw = float(esp_st.get("yaw", 0.0))
+    gz = float(esp_st.get("gz", 0.0))
+    dist = float(esp_st.get("dist", -2.0))
+
+    yaw_sin, yaw_cos = _angle_to_sin_cos(yaw)
+
+    return {
+        "obs": _json_safe(obs),
+
+        # ESP32 sensor state
+        "dist_cm": dist,
+        "path_clear": int(esp_st.get("path", 0)),
+        "direction": int(esp_st.get("dir", 0)),
+        "fault": int(esp_st.get("fault", 0)),
+
+        # Gyroscope / heading state
+        "yaw_deg": yaw,
+        "yaw_sin": yaw_sin,
+        "yaw_cos": yaw_cos,
+        "gz_dps": gz,
+
+        # Previous control context
+        "last_action": int(last_action),
+    }
+
+
+def _log_experience(
+    obs,
+    action: int,
+    reward: float,
+    next_obs,
+    info: dict,
+    esp_before: dict,
+    esp_after: dict,
+    last_action: int,
+):
+    """
+    Append one experience sample to data/experience.jsonl.
+
+    Each line is one JSON object:
+        state, action, reward, next_state, safety info
+
+    The home server can rsync this file and train from it.
+    """
+    if not LOG_EXPERIENCE:
+        return
+
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+
+        safe_action = int(info.get("safe_action", action))
+
+        sample = {
+            "time": time.time(),
+
+            "state": _build_learning_state(obs, esp_before, last_action),
+            "action": int(action),
+            "reward": float(reward),
+            "next_state": _build_learning_state(next_obs, esp_after, safe_action),
+
+            # Debug / safety metadata
+            "agent_action": int(info.get("agent_action", action)),
+            "safe_action": safe_action,
+            "overridden": bool(info.get("overridden", False)),
+            "distance_cm": float(info.get("distance_cm", esp_after.get("dist", -2.0))),
+            "raw_status_before": esp_before.get("raw", ""),
+            "raw_status_after": esp_after.get("raw", ""),
+        }
+
+        with open(EXPERIENCE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(sample) + "\n")
+
+    except Exception as e:
+        print(f"[LEARN] Failed to log experience: {e}")
+
+
+def _shape_reward_with_gyro(reward: float, esp_after: dict, safe_action: int) -> float:
+    """
+    Add gyro-aware reward shaping.
+
+    This punishes endless spin behavior:
+    - if the rover is turning and gz is very high, subtract reward
+    - if distance is invalid, subtract reward
+    """
+    shaped = float(reward)
+
+    gz = abs(float(esp_after.get("gz", 0.0)))
+    dist = float(esp_after.get("dist", -2.0))
+
+    # Actions: 1=LEFT, 2=RIGHT in your current RoverEnv/agent convention.
+    if safe_action in (1, 2) and gz > GYRO_SPIN_DPS:
+        shaped -= SPIN_PENALTY
+
+    # Invalid ultrasonic reading should not be treated as "safe open space".
+    if dist < 0:
+        shaped -= INVALID_DISTANCE_PENALTY
+
+    return shaped
+
+
 # =============================================================================
 # Background Threads
 # =============================================================================
@@ -613,6 +758,15 @@ def _auto_loop():
         path_clear = esp_st["path"] == 1
         dist_cm = esp_st["dist"]
 
+        # Invalid distance means the ultrasonic reading timed out or glitched.
+        # Do NOT turn forever on invalid data. Stop and request a fresh STATUS.
+        if dist_cm < 0:
+            print("[AUTO] Invalid distance — STOP and request STATUS")
+            esp32.send("STOP")
+            esp32.send("STATUS")
+            time.sleep(0.5)
+            continue
+
         if not path_clear:
             obstacle_strikes += 1
             print(
@@ -641,11 +795,31 @@ def _auto_loop():
         # ---------------------------------------------------------------------
         # Predator Mode + RL step
         # ---------------------------------------------------------------------
+        esp_before = get_esp_status()
+
         action, action_hold = _predator_choose_action(obs, last_action, action_hold)
 
         next_obs, reward, _, info = env.step(action)
 
+        esp_after = get_esp_status()
+        safe_action = int(info.get("safe_action", action))
+
+        # Let the gyro help the learning signal.
+        reward = _shape_reward_with_gyro(reward, esp_after, safe_action)
+
         agent.store(obs, action, reward, next_obs)
+
+        _log_experience(
+            obs=obs,
+            action=action,
+            reward=reward,
+            next_obs=next_obs,
+            info=info,
+            esp_before=esp_before,
+            esp_after=esp_after,
+            last_action=last_action,
+        )
+
         occ_map.move(info["safe_action"])
 
         last_action = info["safe_action"]
