@@ -393,9 +393,8 @@ def _startup_sequence():
 
     if sensor_ok:
         # Safer default while training: do not let the random/early model drive immediately.
-        set_mode("MANUAL")
-        esp32.send("STOP")
-        log("Startup complete — MANUAL mode active, AUTO available from dashboard")
+        set_mode("AUTO")
+        log("Startup complete — AUTO mode active")
     else:
         set_mode("MANUAL")
         log("Startup complete with warnings — AUTO BLOCKED, MANUAL mode active")
