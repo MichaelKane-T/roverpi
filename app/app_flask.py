@@ -3,27 +3,53 @@
 app_flask.py
 RoverPi Flask Dashboard + HTTP API
 Created: April 28, 2026
+Updated: April 29, 2026
 
 Purpose
 -------
 This file owns ONLY the web/dashboard layer.
 
+This version serves a built React/Vue/Vite frontend from:
+
+    app/frontend/dist
+
+Your workflow is:
+
+    On development machine:
+        cd app/frontend
+        npm run build
+        git add dist
+        git commit -m "Update rover frontend"
+        git push
+
+    On Rover Pi:
+        cd ~/roverpi
+        git pull
+        python3 main.py
+
 Responsibilities
 ----------------
-1. Serve the local dashboard page.
-2. Stream camera video.
+1. Serve the built Vite frontend:
+   - /
+   - /assets/*
+   - fallback routes for React/Vue single-page app behavior
+
+2. Stream camera video:
+   - /video
+
 3. Expose rover control endpoints:
    - /cmd/<cmd>
    - /auto/start
    - /auto/stop
    - /mode/<m>
+
 4. Expose telemetry endpoints:
    - /status
    - /esp32_status
    - /battery
    - /gyro
    - /map
-5. Call functions/objects from the context passed by main.py.
+   - /health
 
 Design Rule
 -----------
@@ -41,10 +67,11 @@ This avoids circular imports and keeps the robot brain separate from Flask.
 ===============================================================================
 """
 
+import os
 import time
 import cv2
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, send_from_directory
 
 import pantilt
 
@@ -70,14 +97,44 @@ def create_app(ctx):
         - scan lock/data
         - startup log/system-ready accessor
     """
-    app = Flask(__name__)
+
+    # -------------------------------------------------------------------------
+    # Frontend build path
+    # -------------------------------------------------------------------------
+    # Expected project layout:
+    #
+    # roverpi/
+    # ├── main.py
+    # ├── app_flask.py
+    # └── app/
+    #     └── frontend/
+    #         └── dist/
+    #             ├── index.html
+    #             └── assets/
+    #
+    # Flask serves index.html and the compiled static assets from here.
+    # -------------------------------------------------------------------------
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DIST_DIR = os.path.join(BASE_DIR, "app", "frontend", "dist")
+    ASSETS_DIR = os.path.join(DIST_DIR, "assets")
+
+    app = Flask(
+        __name__,
+        static_folder=ASSETS_DIR,
+        static_url_path="/assets",
+    )
 
     # =========================================================================
     # Video Stream Helper
     # =========================================================================
 
     def _generate_video():
-        """MJPEG camera stream generator."""
+        """
+        MJPEG camera stream generator.
+
+        The frontend simply uses:
+            <img src="/video" />
+        """
         while True:
             frame = ctx.picam2.capture_array()
             ok, buf = cv2.imencode(".jpg", frame)
@@ -93,318 +150,60 @@ def create_app(ctx):
             time.sleep(0.05)
 
     # =========================================================================
-    # Dashboard Page
+    # Built Frontend Routes
     # =========================================================================
 
     @app.route("/")
     def index():
         """
-        Main dashboard HTML.
+        Serve built Vite frontend index.html.
 
-        This stays in app_flask.py because it is part of the web UI,
-        not part of the robot autonomy logic.
+        Before running this on the rover, build frontend with:
+
+            cd app/frontend
+            npm run build
         """
-        return """<!DOCTYPE html>
-<html>
-<head>
-  <title>RoverPi Local</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: #05070b;
-      font-family: monospace;
-      color: #cbd5e1;
-      padding: 16px;
-    }
-    h1 {
-      color: #67e8f9;
-      font-size: 18px;
-      letter-spacing: .2em;
-      margin-bottom: 16px;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      max-width: 900px;
-    }
-    .panel {
-      border: 1px solid rgba(34,211,238,.15);
-      background: rgba(8,16,24,.9);
-      border-radius: 12px;
-      padding: 12px;
-    }
-    .panel h2 {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .25em;
-      color: rgba(103,232,249,.7);
-      margin-bottom: 10px;
-    }
-    img {
-      width: 100%;
-      border-radius: 8px;
-      background: #02050a;
-    }
-    .btn-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 6px;
-    }
-    button {
-      border: 1px solid rgba(56,189,248,.3);
-      background: rgba(56,189,248,.06);
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: .14em;
-      color: #7dd3fc;
-      cursor: pointer;
-      font-family: monospace;
-    }
-    button:hover {
-      background: rgba(56,189,248,.18);
-    }
-    button.danger {
-      border-color: rgba(248,113,113,.35);
-      color: #fca5a5;
-      background: rgba(248,113,113,.08);
-    }
-    button.mode-active {
-      background: rgba(34,211,238,.2);
-      color: #a5f3fc;
-    }
-    .stat {
-      display: flex;
-      justify-content: space-between;
-      padding: 5px 8px;
-      background: rgba(255,255,255,.03);
-      border-radius: 6px;
-      margin-top: 4px;
-      font-size: 11px;
-    }
-    .stat span:last-child {
-      color: #67e8f9;
-      font-weight: 700;
-    }
-    .path-clear {
-      color: #34d399 !important;
-    }
-    .path-blocked {
-      color: #f87171 !important;
-    }
-    #log {
-      height: 160px;
-      overflow-y: auto;
-      background: rgba(0,0,0,.3);
-      border-radius: 8px;
-      padding: 8px;
-      font-size: 10px;
-      margin-top: 6px;
-    }
-    .log-line {
-      border-bottom: 1px solid rgba(255,255,255,.04);
-      padding: 2px 0;
-      color: #94a3b8;
-    }
-    .log-ok { color: #34d399; }
-    .log-err { color: #f87171; }
-    input[type=range] {
-      width: 100%;
-      accent-color: #38bdf8;
-      margin: 4px 0;
-    }
-    .slider-row {
-      font-size: 10px;
-      color: #475569;
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 2px;
-    }
-    #online {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #f87171;
-      margin-right: 6px;
-    }
-    #online.up {
-      background: #34d399;
-      box-shadow: 0 0 6px #34d399;
-    }
-  </style>
-</head>
+        index_path = os.path.join(DIST_DIR, "index.html")
 
-<body>
-  <h1><span id="online"></span>ROVERPI LOCAL DASHBOARD</h1>
+        if not os.path.exists(index_path):
+            return jsonify({
+                "error": "frontend build not found",
+                "expected": index_path,
+                "fix": "Run: cd app/frontend && npm run build, then git add app/frontend/dist and git push/pull."
+            }), 500
 
-  <div class="grid">
+        return send_from_directory(DIST_DIR, "index.html")
 
-    <div class="panel" style="grid-column:1/-1">
-      <h2>Camera Feed</h2>
-      <img src="/video" />
-    </div>
+    @app.route("/<path:path>")
+    def frontend_fallback(path):
+        """
+        Serve frontend files or fall back to index.html.
 
-    <div class="panel">
-      <h2>Mode</h2>
-      <div class="btn-row">
-        <button id="btn-auto" onclick="setMode('AUTO')">AUTO</button>
-        <button id="btn-manual" onclick="setMode('MANUAL')">MANUAL</button>
-      </div>
+        Why this exists:
+        - Vite puts compiled JS/CSS/images in dist/assets.
+        - React/Vue single-page apps may also need refresh-safe routes.
+        - If a requested file exists in dist, serve it.
+        - Otherwise return index.html and let the frontend router handle it.
 
-      <h2 style="margin-top:12px">Drive</h2>
-      <div class="btn-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px">
-        <div></div>
-        <button onclick="cmd('forward')">&#9650; FWD</button>
-        <div></div>
+        Important:
+        API routes like /status, /cmd, /video, etc. are declared separately.
+        Flask chooses the more specific API routes before this fallback.
+        """
+        requested = os.path.join(DIST_DIR, path)
 
-        <button onclick="cmd('left')">&#9668; LEFT</button>
-        <button class="danger" onclick="cmd('stop')">&#9632; STOP</button>
-        <button onclick="cmd('right')">RIGHT &#9658;</button>
+        if os.path.exists(requested) and os.path.isfile(requested):
+            return send_from_directory(DIST_DIR, path)
 
-        <div></div>
-        <button onclick="cmd('backward')">&#9660; BACK</button>
-        <div></div>
-      </div>
-    </div>
+        index_path = os.path.join(DIST_DIR, "index.html")
 
-    <div class="panel">
-      <h2>Gimbal</h2>
+        if not os.path.exists(index_path):
+            return jsonify({
+                "error": "frontend build not found",
+                "expected": index_path,
+                "fix": "Run: cd app/frontend && npm run build, then git add app/frontend/dist and git push/pull."
+            }), 500
 
-      <div class="slider-row">
-        <span>Pan</span>
-        <span id="pan-v">90&deg;</span>
-      </div>
-      <input type="range" min="0" max="180" value="90" id="pan"
-             oninput="document.getElementById('pan-v').textContent=this.value+'&deg;'"
-             onchange="fetch('/cam/pan/'+this.value)">
-
-      <div class="slider-row" style="margin-top:8px">
-        <span>Tilt</span>
-        <span id="tilt-v">90&deg;</span>
-      </div>
-      <input type="range" min="15" max="145" value="90" id="tilt"
-             style="accent-color:#fbbf24"
-             oninput="document.getElementById('tilt-v').textContent=this.value+'&deg;'"
-             onchange="fetch('/cam/tilt/'+this.value)">
-
-      <div class="btn-row" style="margin-top:8px">
-        <button onclick="centerCam()">&#8857; Center</button>
-        <button onclick="cmd('scan')">Scan</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>Telemetry</h2>
-      <div class="stat"><span>Distance</span><span id="t-dist">—</span></div>
-      <div class="stat"><span>Path</span><span id="t-path">—</span></div>
-      <div class="stat"><span>Mode</span><span id="t-mode">—</span></div>
-      <div class="stat"><span>System Ready</span><span id="t-ready">—</span></div>
-      <div class="stat"><span>Agent Steps</span><span id="t-steps">—</span></div>
-      <div class="stat"><span>Epsilon</span><span id="t-eps">—</span></div>
-      <div class="stat">
-        <span>ESP32 raw</span>
-        <span id="t-esp" style="font-size:9px;max-width:160px;overflow:hidden;text-overflow:ellipsis">—</span>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>Occupancy Map</h2>
-      <img id="map-img" src="/map" style="image-rendering:pixelated"/>
-    </div>
-
-    <div class="panel" style="grid-column:1/-1">
-      <h2>Event Log</h2>
-      <div id="log"></div>
-    </div>
-
-  </div>
-
-  <script>
-    const log = document.getElementById('log');
-
-    function addLog(msg, ok=true) {
-      const d = document.createElement('div');
-      d.className = 'log-line';
-      d.innerHTML =
-        '<span class="'+(ok?'log-ok':'log-err')+'">'+
-        new Date().toLocaleTimeString()+
-        '</span> '+msg;
-
-      log.prepend(d);
-
-      if (log.children.length > 60) {
-        log.lastChild.remove();
-      }
-    }
-
-    async function cmd(c) {
-      const r = await fetch('/cmd/'+c);
-      const d = await r.json();
-      addLog('CMD '+c.toUpperCase()+' → '+(d.esp32 || 'sent'), r.ok);
-    }
-
-    async function setMode(m) {
-      const url = m === 'AUTO' ? '/auto/start' : '/auto/stop';
-      await fetch(url);
-      addLog('Mode → '+m);
-    }
-
-    async function centerCam() {
-      await fetch('/cam/center');
-
-      document.getElementById('pan').value = 90;
-      document.getElementById('tilt').value = 90;
-      document.getElementById('pan-v').textContent = '90°';
-      document.getElementById('tilt-v').textContent = '90°';
-
-      addLog('Camera centered');
-    }
-
-    async function poll() {
-      try {
-        const [sr, se] = await Promise.all([
-          fetch('/status').then(r => r.json()),
-          fetch('/esp32_status').then(r => r.json()),
-        ]);
-
-        document.getElementById('online').className = 'up';
-
-        const dist = se.dist >= 0 ? se.dist.toFixed(1)+'cm' : '—';
-        const pathOk = se.path === 1;
-
-        const pathEl = document.getElementById('t-path');
-        pathEl.textContent = pathOk ? 'CLEAR' : 'BLOCKED';
-        pathEl.className = pathOk ? 'path-clear' : 'path-blocked';
-
-        document.getElementById('t-dist').textContent = dist;
-        document.getElementById('t-mode').textContent = sr.mode;
-        document.getElementById('t-ready').textContent = sr.system_ready ? 'YES' : 'NO';
-        document.getElementById('t-steps').textContent = sr.agent_steps;
-        document.getElementById('t-eps').textContent = sr.epsilon;
-        document.getElementById('t-esp').textContent = se.raw || sr.esp32_msg || '—';
-
-        document.getElementById('btn-auto').className =
-          sr.mode === 'AUTO' ? 'mode-active' : '';
-        document.getElementById('btn-manual').className =
-          sr.mode === 'MANUAL' ? 'mode-active' : '';
-
-        document.getElementById('map-img').src = '/map?t=' + Date.now();
-
-      } catch(e) {
-        document.getElementById('online').className = '';
-      }
-    }
-
-    setInterval(poll, 800);
-    poll();
-    addLog('Local dashboard loaded');
-  </script>
-</body>
-</html>"""
+        return send_from_directory(DIST_DIR, "index.html")
 
     # =========================================================================
     # Video + Map

@@ -139,3 +139,28 @@ docs/images/raw/
 *.bin
 *.hex
 *.map
+
+
+# Node/Vite junk
+app/node_modules/
+app/.vite/
+app/.cache/
+app/npm-debug.log*
+app/yarn-debug.log*
+app/yarn-error.log*
+app/pnpm-debug.log*
+
+# Optional: ignore local env files
+app/.env
+app/.env.local
+
+# Python junk
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS/editor junk
+.DS_Store
+.vscode/
+.idea/
