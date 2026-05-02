@@ -42,7 +42,7 @@ static const char *TAG = "ROVERPI";
 #define FSM_TASK_PERIOD_MS      50
 #define GUARD_PERIOD_MS         80
 #define SCAN_SETTLE_MS          200
-#define HEARTBEAT_TIMEOUT_MS    2000
+#define HEARTBEAT_TIMEOUT_MS    5000
 
 #define STACK_SIZE              4096
 #define PRIORITY_UART           7

@@ -66,7 +66,7 @@ from app_flask import create_app
 # =============================================================================
 
 IDLE_TIMEOUT_S = 30.0
-PING_INTERVAL_S = 1.0
+PING_INTERVAL_S = 0.5
 AUTO_STEP_HZ = 4
 
 FRAME_W = 640
