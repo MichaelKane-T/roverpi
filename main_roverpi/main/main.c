@@ -360,17 +360,22 @@ void gyro_task(void *arg)
 
     ESP_LOGI(TAG, "MPU6050 gyro task started");
 
+    static int gyro_log_count = 0;
+
     while (1) {
         mpu6050_update_yaw();
 
-        ESP_LOGI(
-            TAG,
-            "Yaw=%.2f deg | GZ=%.2f deg/s",
-            mpu6050_get_yaw_deg(),
-            mpu6050_get_gz_dps()
-        );
+        if (++gyro_log_count >= 25) {
+            gyro_log_count = 0;
+            ESP_LOGI(
+                TAG,
+                "Yaw=%.2f deg | GZ=%.2f deg/s",
+                mpu6050_get_yaw_deg(),
+                mpu6050_get_gz_dps()
+            );
+        }
 
-        vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 

@@ -153,9 +153,33 @@ _esp_status = {
 }
 
 _escape_lock = threading.Lock()
+
+# =============================================================================
+# Safe scan helper
+# =============================================================================
+_scan_in_progress = threading.Event()
+_uart_cmd_lock = threading.Lock()
+
+def send_cmd(cmd: str):
+    with _uart_cmd_lock:
+        esp32.send(cmd)
+
+def _safe_scan():
+    """Send SCAN and prevent other non-heartbeat command bursts during scan."""
+    if _scan_in_progress.is_set():
+        return
+
+    _scan_in_progress.set()
+    try:
+        send_cmd("SCAN")
+        time.sleep(2.2)
+    finally:
+        _scan_in_progress.clear()
+
 # =============================================================================
 # forward stuck helper
 # =============================================================================
+
 _stuck_history = []
 STUCK_WINDOW_S = 3.0
 STUCK_MIN_SAMPLES = 6
@@ -424,7 +448,7 @@ def _startup_sequence():
     time.sleep(0.5)
 
     log("Running initial scan...")
-    esp32.send("SCAN")
+    _safe_scan()
     time.sleep(STARTUP_SCAN_WAIT)
 
     log("Priming STATUS cache...")
@@ -542,33 +566,19 @@ def _parse_scan_messages():
 # =============================================================================
 
 def _escape_from_obstacle():
-    """
-    Hard escape routine for AUTO mode.
-
-    Used when path remains blocked for multiple strikes:
-    1. BACKWARD briefly
-    2. STOP
-    3. SCAN
-    4. STATUS
-
-    This prevents the rover from sitting forever against an obstacle.
-    """
     if not _escape_lock.acquire(blocking=False):
         return
 
     try:
         print("[AUTO] Obstacle escape — reversing")
-        esp32.send("BACKWARD")
-        time.sleep(ESCAPE_BACKWARD_S)
+        send_cmd("BACKWARD")
+        time.sleep(1.5)
 
-        esp32.send("STOP")
-        time.sleep(0.1)
-
-        esp32.send("SCAN")
-        time.sleep(0.8)
-
-        esp32.send("STATUS")
+        send_cmd("STOP")
         time.sleep(0.2)
+
+        send_cmd("STATUS")
+        time.sleep(0.3)
 
     finally:
         _escape_lock.release()
@@ -716,9 +726,8 @@ def _ping_loop():
     during manual driving, startup, scanning, or obstacle escape.
     """
     while True:
-        esp32.send("PING")
+        send_cmd("PING")
         time.sleep(PING_INTERVAL_S)
-
 
 def _esp_listener_loop():
     """
@@ -787,8 +796,8 @@ def _auto_loop():
         # ---------------------------------------------------------------------
         if not _sensor_healthy():
             print("[AUTO] Sensor unhealthy — holding and requesting STATUS")
-            esp32.send("STATUS")
-            esp32.send("STOP")
+            send_cmd("STATUS")
+            send_cmd("STOP")
             time.sleep(1.0)
             continue
 
@@ -803,8 +812,8 @@ def _auto_loop():
         # -1.0 means ultrasonic timeout/open space and is allowed if path_clear=1.
         if dist_cm == -2.0 or dist_cm == 0.0:
             print("[AUTO] Invalid distance — STOP and request STATUS")
-            esp32.send("STOP")
-            esp32.send("STATUS")
+            send_cmd("STOP")
+            send_cmd("STATUS")
             time.sleep(0.5)
             continue
 
