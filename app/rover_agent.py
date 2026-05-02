@@ -16,6 +16,7 @@ import threading
 import collections
 import random
 import numpy as np
+import requests
 
 # TFLite is part of tflite-runtime on Pi — much lighter than full TF
 try:
@@ -118,6 +119,9 @@ def export_tflite(keras_model, path=TFLITE_PATH):
 # ── main agent class ─────────────────────────────────────────────────────────
 
 class RoverAgent:
+    CLOUD_URL = "http://192.168.1.185:7000/predict"
+    USE_CLOUD = True
+
     def __init__(self):
         self.buffer   = ReplayBuffer()
         self.epsilon  = EPSILON_START
@@ -146,20 +150,44 @@ class RoverAgent:
 
     # ── inference ────────────────────────────────────────────────────────────
 
-    def select_action(self, obs: np.ndarray) -> int:
-        """Epsilon-greedy action selection using TFLite interpreter."""
-        if random.random() < self.epsilon:
-            return random.randint(0, N_ACTIONS - 1)
+    def select_action(self, obs):
+        """
+        Choose action using cloud model first.
+        Falls back to random/local policy if cloud fails.
+        """
 
-        if self.interpreter is not None:
-            return self._tflite_predict(obs)
+        if self.USE_CLOUD:
+            try:
+                # Build same 21-feature shape used during training.
+                features = list(obs) + [
+                    200.0,  # dist_cm placeholder for now
+                    1,      # path_clear placeholder
+                    0,      # direction placeholder
+                    0,      # fault placeholder
+                    0.0,    # yaw_sin placeholder
+                    1.0,    # yaw_cos placeholder
+                    0.0,    # gz_dps placeholder
+                    getattr(self, "last_action", 4),
+                ]
 
-        if self.model is not None:
-            with self._lock:
-                q = self.model.predict(obs[None], verbose=0)[0]
-            return int(np.argmax(q))
+                r = requests.post(
+                    self.CLOUD_URL,
+                    json={"features": features},
+                    timeout=0.25,
+                )
 
-        return random.randint(0, N_ACTIONS - 1)
+                if r.ok:
+                    action = int(r.json()["action"])
+                    self.last_action = action
+                    return action
+
+            except Exception as e:
+                print(f"[Agent] Cloud inference failed: {e}")
+
+        # fallback
+        action = self._random_action()
+        self.last_action = action
+        return action
 
     def _tflite_predict(self, obs: np.ndarray) -> int:
         inp_detail = self.interpreter.get_input_details()[0]
@@ -168,6 +196,14 @@ class RoverAgent:
         self.interpreter.invoke()
         q = self.interpreter.get_tensor(out_detail["index"])[0]
         return int(np.argmax(q))
+    
+    def _random_action(self) -> int:
+        # Bias toward forward while still allowing exploration
+        return random.choices(
+            population=[0, 1, 2, 3, 4],
+            weights=[0.65, 0.12, 0.12, 0.03, 0.08],
+            k=1,
+        )[0]
 
     # ── experience storage ────────────────────────────────────────────────────
 
