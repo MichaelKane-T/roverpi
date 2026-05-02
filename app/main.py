@@ -656,7 +656,7 @@ def _shape_reward_with_gyro(reward: float, esp_after: dict, safe_action: int) ->
         shaped -= SPIN_PENALTY
 
     # Invalid ultrasonic reading should not be treated as "safe open space".
-    if dist < 0:
+    if dist == -2.0 or dist == 0.0:
         shaped -= INVALID_DISTANCE_PENALTY
 
     return shaped
@@ -757,9 +757,9 @@ def _auto_loop():
         path_clear = esp_st["path"] == 1
         dist_cm = esp_st["dist"]
 
-        # Invalid distance means the ultrasonic reading timed out or glitched.
-        # Do NOT turn forever on invalid data. Stop and request a fresh STATUS.
-        if dist_cm < 0:
+        # Invalid distance means true no-status/bad cache only.
+        # -1.0 means ultrasonic timeout/open space and is allowed if path_clear=1.
+        if dist_cm == -2.0 or dist_cm == 0.0:
             print("[AUTO] Invalid distance — STOP and request STATUS")
             esp32.send("STOP")
             esp32.send("STATUS")
