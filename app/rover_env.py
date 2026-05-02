@@ -196,9 +196,20 @@ class RoverEnv:
         obs = np.zeros(OBS_DIM, dtype=np.float32)
 
         dist = self._get_forward_dist()
+
+        # Convert special distance codes into observation distance.
+        # -1.0 = timeout/open space, treat as max distance for ML/reward.
+        # -2.0 = no status yet, treat as max distance fallback.
+        #  0.0 = bad/blocked read, keep as 0.
+        if dist == -1.0 or dist == -2.0:
+            dist_for_obs = MAX_DIST_CM
+        else:
+            dist_for_obs = dist
+
         with self._lock:
             self._distance_cm = dist
-        obs[0] = np.clip(dist / MAX_DIST_CM, 0.0, 1.0)
+
+        obs[0] = np.clip(dist_for_obs / MAX_DIST_CM, 0.0, 1.0)
 
         with self._lock:
             msg = self._esp_msg
