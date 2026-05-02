@@ -159,7 +159,7 @@ class RoverAgent:
         if self.USE_CLOUD:
             try:
                 # Build same 21-feature shape used during training.
-                features = list(obs) + [
+                features = [float(x) for x in obs] + [
                     200.0,  # dist_cm placeholder for now
                     1,      # path_clear placeholder
                     0,      # direction placeholder
@@ -167,7 +167,7 @@ class RoverAgent:
                     0.0,    # yaw_sin placeholder
                     1.0,    # yaw_cos placeholder
                     0.0,    # gz_dps placeholder
-                    getattr(self, "last_action", 4),
+                    float(getattr(self, "last_action", 4)),
                 ]
 
                 r = requests.post(
