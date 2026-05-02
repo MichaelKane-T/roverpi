@@ -113,8 +113,15 @@ class RoverEnv:
              - After max steps, STOP and request a rescan
         Returns the safe action integer.
         """
-        fwd_dist  = self._get_forward_dist()
-        fwd_clear = fwd_dist > OBSTACLE_CM
+        fwd_dist = self._get_forward_dist()
+
+        # Interpret ultrasonic correctly
+        if fwd_dist == -2.0 or fwd_dist == 0.0:
+            fwd_clear = False  # bad reading
+        elif fwd_dist == -1.0:
+            fwd_clear = True   # timeout = open space
+        else:
+            fwd_clear = fwd_dist > OBSTACLE_CM
 
         if fwd_clear:
             # Path open — let the agent decide, just don't allow backward
@@ -149,8 +156,8 @@ class RoverEnv:
         # Hit backward limit — stop and request rescan
         print("[Escape] Backward limit reached — stopping and rescanning")
         self._backward_count = 0
-        self.esp32.send("SCAN")
-        time.sleep(SCAN_WAIT_S)
+        # Let main.py handle scanning
+        print("[Escape] Requesting scan (deferred)")
         return 4   # STOP
 
     def step(self, action: int):
