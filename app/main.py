@@ -181,41 +181,67 @@ def _safe_scan():
 # =============================================================================
 
 _stuck_history = []
-STUCK_WINDOW_S = 3.0
-STUCK_MIN_SAMPLES = 6
-STUCK_DIST_DELTA_CM = 3.0
-STUCK_GZ_MAX_DPS = 8.0
+
+STUCK_WINDOW_S = 5.0
+STUCK_MIN_SAMPLES = 10
+STUCK_DIST_DELTA_CM = 1.0
+STUCK_GZ_MAX_DPS = 3.0
+STUCK_APPROACH_DELTA_CM = 5.0
 
 def _is_forward_stuck(esp_st: dict, safe_action: int) -> bool:
     """
     Detect likely stuck behavior while driving forward.
 
-    Uses distance stability + low gyro rotation.
-    This avoids calling straight driving 'stuck' based on yaw alone.
+    Stuck means:
+    - rover is commanded FORWARD
+    - distance is valid
+    - distance barely changes for several seconds
+    - gyro says rover is not rotating much
+
+    If distance is clearly decreasing, the rover is moving forward,
+    so it is NOT stuck.
     """
-    if safe_action != 0:  # only FORWARD
+    if safe_action != 0:  # only check FORWARD
         _stuck_history.clear()
         return False
 
     dist = float(esp_st.get("dist", -2.0))
     gz = abs(float(esp_st.get("gz", 0.0)))
 
+    # Ignore invalid/open-space readings for stuck detection.
+    # -1.0 = timeout/open space
+    # -2.0 = no status yet
+    #  0.0 = bad read
     if dist <= 0:
+        _stuck_history.clear()
         return False
 
     now = time.time()
     _stuck_history.append((now, dist, gz))
 
     cutoff = now - STUCK_WINDOW_S
-    _stuck_history[:] = [(t, d, g) for t, d, g in _stuck_history if t > cutoff]
+    _stuck_history[:] = [
+        (t, d, g) for t, d, g in _stuck_history
+        if t >= cutoff
+    ]
 
     if len(_stuck_history) < STUCK_MIN_SAMPLES:
         return False
 
     dists = [d for _, d, _ in _stuck_history]
-    avg_gz = sum(g for _, _, g in _stuck_history) / len(_stuck_history)
+    gz_vals = [g for _, _, g in _stuck_history]
 
-    distance_not_changing = (max(dists) - min(dists)) < STUCK_DIST_DELTA_CM
+    dist_start = dists[0]
+    dist_end = dists[-1]
+    dist_range = max(dists) - min(dists)
+    avg_gz = sum(gz_vals) / len(gz_vals)
+
+    # If distance is decreasing enough, rover is approaching something.
+    # That means it is moving, not stuck.
+    if dist_end < dist_start - STUCK_APPROACH_DELTA_CM:
+        return False
+
+    distance_not_changing = dist_range < STUCK_DIST_DELTA_CM
     not_rotating = avg_gz < STUCK_GZ_MAX_DPS
 
     return distance_not_changing and not_rotating
