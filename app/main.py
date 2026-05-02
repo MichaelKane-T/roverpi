@@ -153,6 +153,48 @@ _esp_status = {
 }
 
 _escape_lock = threading.Lock()
+# =============================================================================
+# forward stuck helper
+# =============================================================================
+_stuck_history = []
+STUCK_WINDOW_S = 3.0
+STUCK_MIN_SAMPLES = 6
+STUCK_DIST_DELTA_CM = 3.0
+STUCK_GZ_MAX_DPS = 8.0
+
+def _is_forward_stuck(esp_st: dict, safe_action: int) -> bool:
+    """
+    Detect likely stuck behavior while driving forward.
+
+    Uses distance stability + low gyro rotation.
+    This avoids calling straight driving 'stuck' based on yaw alone.
+    """
+    if safe_action != 0:  # only FORWARD
+        _stuck_history.clear()
+        return False
+
+    dist = float(esp_st.get("dist", -2.0))
+    gz = abs(float(esp_st.get("gz", 0.0)))
+
+    if dist <= 0:
+        return False
+
+    now = time.time()
+    _stuck_history.append((now, dist, gz))
+
+    cutoff = now - STUCK_WINDOW_S
+    _stuck_history[:] = [(t, d, g) for t, d, g in _stuck_history if t > cutoff]
+
+    if len(_stuck_history) < STUCK_MIN_SAMPLES:
+        return False
+
+    dists = [d for _, d, _ in _stuck_history]
+    avg_gz = sum(g for _, _, g in _stuck_history) / len(_stuck_history)
+
+    distance_not_changing = (max(dists) - min(dists)) < STUCK_DIST_DELTA_CM
+    not_rotating = avg_gz < STUCK_GZ_MAX_DPS
+
+    return distance_not_changing and not_rotating
 
 
 # =============================================================================
@@ -802,6 +844,18 @@ def _auto_loop():
 
         esp_after = get_esp_status()
         safe_action = int(info.get("safe_action", action))
+
+        if _is_forward_stuck(esp_after, safe_action):
+            print("[AUTO] Forward stuck detected — running escape")
+            _escape_from_obstacle()
+
+            obs = env.reset()
+            obstacle_strikes = 0
+            step = 0
+            last_action = 4
+            action_hold = 0
+            _stuck_history.clear()
+            continue
 
         # Let the gyro help the learning signal.
         reward = _shape_reward_with_gyro(reward, esp_after, safe_action)
