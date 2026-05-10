@@ -6,6 +6,7 @@ idf_component_register(SRCS
                           "roverpi_fsm.c"
                           "serial_uart.c"
                           "battery_monitor.c"
+                          "ir_obstacle.c"
                        PRIV_REQUIRES driver config esp_timer esp_driver_uart esp_adc )
 # PRIV_REQUIRES ...
 # target_compile_options(${COMPONENT_LIB} PRIVATE "-Wno-format")

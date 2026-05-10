@@ -33,6 +33,7 @@
 #include "serial_uart.h"
 #include "gyroscope.h"
 #include "battery_monitor.h"
+#include "ir_obstacle.h"
 
 static const char *TAG = "ROVERPI";
 
@@ -45,6 +46,7 @@ static const char *TAG = "ROVERPI";
 #define SCAN_SETTLE_MS          200
 #define HEARTBEAT_TIMEOUT_MS    5000
 #define BATTERY_TASK_PERIOD_MS  3000
+#define IR_TASK_PERIOD_MS       50
 
 #define STACK_SIZE              4096
 #define PRIORITY_UART           7
@@ -52,6 +54,7 @@ static const char *TAG = "ROVERPI";
 #define PRIORITY_FSM            5
 #define PRIORITY_GYRO           4
 #define PRIORITY_BATTERY        3
+#define PRIORITY_IR             6
 
 #define TIMEOUT_STRIKE_MAX      3
 
@@ -67,6 +70,7 @@ typedef struct {
     float             battery_pct;
     int               battery_state;   // 0=OK, 1=LOW, 2=CRITICAL
     bool              battery_critical;
+    bool              ir_obstacle;
     TickType_t        last_heartbeat;
 } rover_shared_state_t;
 
@@ -79,6 +83,7 @@ static rover_shared_state_t rover_state = {
     .battery_pct     = 0.0f,
     .battery_state   = 0,
     .battery_critical = false,
+    .ir_obstacle     = false,
     .last_heartbeat  = 0,
 };
 
@@ -86,6 +91,38 @@ static SemaphoreHandle_t state_mutex = NULL;
 
 #define STATE_LOCK()    xSemaphoreTake(state_mutex, portMAX_DELAY)
 #define STATE_UNLOCK()  xSemaphoreGive(state_mutex)
+
+/*====================================================================
+ * ir_obstacle_task
+ *====================================================================*/
+static void ir_obstacle_task(void *arg)
+{
+    (void)arg;
+
+    ESP_LOGI(TAG, "IR obstacle task started");
+
+    while (1) {
+        bool blocked = ir_obstacle_detected();
+
+        STATE_LOCK();
+        rover_state.ir_obstacle = blocked;
+
+        if (blocked) {
+            rover_state.path_clear = false;
+
+            if (rover_state.direction == DIR_FORWARD) {
+                rover_state.direction = DIR_STOP;
+            }
+        }
+        STATE_UNLOCK();
+
+        if (blocked) {
+            ESP_LOGW(TAG, "IR obstacle detected — forward blocked");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(IR_TASK_PERIOD_MS));
+    }
+}
 
 /*====================================================================
  * Scan request flags.
@@ -272,7 +309,7 @@ static void uart_task(void *arg)
 
             else if (strcmp(rx_buf, "FORWARD") == 0) {
                 STATE_LOCK();
-                bool blocked = !rover_state.path_clear;
+                bool blocked = !rover_state.path_clear || rover_state.ir_obstacle;
                 bool faulted = rover_state.fault_detected;
                 if (faulted)      rover_state.direction = DIR_STOP;
                 else if (blocked) rover_state.direction = DIR_STOP;
@@ -359,16 +396,17 @@ static void uart_task(void *arg)
                 float batt_v = rover_state.battery_v;
                 float batt_pct = rover_state.battery_pct;
                 int batt_state = rover_state.battery_state;
+                bool ir = rover_state.ir_obstacle;
                 STATE_UNLOCK(); 
 
-                char status[192];
+                char status[224];
                 float yaw = mpu6050_get_yaw_deg();
                 float gz  = mpu6050_get_gz_dps();
 
                 snprintf(
                     status,
                     sizeof(status),
-                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d",
+                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d ir=%d",
                     dist,
                     clear,
                     dir,
@@ -377,7 +415,8 @@ static void uart_task(void *arg)
                     gz,
                     batt_v,
                     batt_pct,
-                    batt_state
+                    batt_state,
+                    ir
                 );
                 serial_uart_send_line(status);
             }
@@ -582,7 +621,8 @@ void app_main(void)
     distance_sensor_init();
     roverpi_fsm_init();
     serial_uart_init();
-    battery_monitor_init();
+    battery_monitor_init();\
+    ir_obstacle_init();
 
     STATE_LOCK();
     rover_state.last_heartbeat = xTaskGetTickCount();
@@ -593,5 +633,6 @@ void app_main(void)
     xTaskCreate(scan_task, "scan", STACK_SIZE, NULL, PRIORITY_SCAN, NULL);
     xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
     xTaskCreate(battery_task, "battery", STACK_SIZE, NULL, PRIORITY_BATTERY, NULL);
+    xTaskCreate(ir_obstacle_task, "ir_obstacle", STACK_SIZE, NULL, PRIORITY_IR, NULL);
     ESP_LOGI(TAG, "All RoverPi tasks running");
 }
