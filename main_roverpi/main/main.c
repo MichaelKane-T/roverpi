@@ -66,6 +66,7 @@ typedef struct {
     float             battery_v;
     float             battery_pct;
     int               battery_state;   // 0=OK, 1=LOW, 2=CRITICAL
+    bool              battery_critical;
     TickType_t        last_heartbeat;
 } rover_shared_state_t;
 
@@ -77,6 +78,7 @@ static rover_shared_state_t rover_state = {
     .battery_v       = -1.0f,
     .battery_pct     = 0.0f,
     .battery_state   = 0,
+    .battery_critical = false,
     .last_heartbeat  = 0,
 };
 
@@ -121,10 +123,10 @@ static void battery_task(void *arg)
         rover_state.battery_v = batt.voltage;
         rover_state.battery_pct = batt.percent;
         rover_state.battery_state = batt.state;
+        rover_state.battery_critical = (batt.state == BATTERY_CRITICAL);
 
-        if (batt.state == BATTERY_CRITICAL) {
+        if (rover_state.battery_critical) {
             rover_state.direction = DIR_STOP;
-            rover_state.fault_detected = true;
         }
         STATE_UNLOCK();
 
