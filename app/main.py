@@ -153,6 +153,7 @@ _esp_status = {
     "batt": -1.0,
     "batt_pct": 0.0,
     "batt_state": 0,
+    "ir": 0,
 }
 
 _escape_lock = threading.Lock()
@@ -369,6 +370,7 @@ def _update_esp_status(msg: str):
             _esp_status["batt"] = float(parsed.get("batt", _esp_status["batt"]))
             _esp_status["batt_pct"] = float(parsed.get("batt_pct", _esp_status["batt_pct"]))
             _esp_status["batt_state"] = int(parsed.get("batt_state", _esp_status["batt_state"]))
+            _esp_status["ir"] = int(parsed.get("ir", _esp_status["ir"]))
             _esp_status["raw"] = msg
 
     except Exception as e:
@@ -527,7 +529,7 @@ def _predator_choose_action(obs, last_action, hold_count):
     action = agent.select_action(obs)
 
     # Do not stop for no reason when path is clear.
-    if action == 4 and PREDATOR_FORWARD_BIAS:
+    if action == 4:
         action = 0
 
     # Do not reverse on an open path.
@@ -837,6 +839,19 @@ def _auto_loop():
         # Obstacle check before action
         # ---------------------------------------------------------------------
         esp_st = get_esp_status()
+        if int(esp_st.get("batt_state", 0)) >= 2:
+            print("[AUTO] Battery critical — STOP and hold")
+            send_cmd("STOP")
+            time.sleep(1.0)
+            continue
+
+        if int(esp_st.get("ir", 0)) == 1:
+            print("[AUTO] IR obstacle detected — STOP and hold")
+            send_cmd("STOP")
+            send_cmd("STATUS")
+            time.sleep(0.3)
+            continue
+
         path_clear = esp_st["path"] == 1
         dist_cm = esp_st["dist"]
 
