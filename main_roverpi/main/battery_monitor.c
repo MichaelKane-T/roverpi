@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hardware_config.h"
 
 static const char *TAG = "BATT_DRIVER";
 
