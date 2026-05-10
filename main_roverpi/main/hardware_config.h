@@ -109,7 +109,6 @@
 #define BATTERY_CELLS       2.0f
 #define CELL_FULL_V         4.20f
 #define CELL_EMPTY_V        3.30f
-#define CELL_LOW_V          3.50f
-#define CELL_CRITICAL_V     3.30f
-
+#define CELL_LOW_V          3.50f   // 7.0V pack
+#define CELL_CRITICAL_V     3.25f   // 6.5V pack
 #endif // HARDWARE_CONFIG_H

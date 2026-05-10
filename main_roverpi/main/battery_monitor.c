@@ -109,8 +109,14 @@ battery_state_t battery_monitor_get_state(float batt_v)
 battery_info_t battery_monitor_read(void)
 {
     battery_info_t info;
+    float sum = 0.0f;
 
-    info.voltage = battery_monitor_get_voltage();
+    for (int i = 0; i < 5; i++) {
+        sum += battery_monitor_get_voltage();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    info.voltage = sum / 5.0f;
     info.percent = battery_percent_from_voltage(info.voltage);
     info.state   = battery_state_from_voltage(info.voltage);
 
