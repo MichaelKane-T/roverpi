@@ -150,6 +150,9 @@ _esp_status = {
     "yaw": 0.0,
     "gz": 0.0,
     "raw": "",
+    "batt": -1.0,
+    "batt_pct": 0.0,
+    "batt_state": 0,
 }
 
 _escape_lock = threading.Lock()
@@ -363,6 +366,9 @@ def _update_esp_status(msg: str):
             _esp_status["fault"] = int(parsed.get("fault", _esp_status["fault"]))
             _esp_status["yaw"] = float(parsed.get("yaw", _esp_status["yaw"]))
             _esp_status["gz"] = float(parsed.get("gz", _esp_status["gz"]))
+            _esp_status["batt"] = float(parsed.get("batt", _esp_status["batt"]))
+            _esp_status["batt_pct"] = float(parsed.get("batt_pct", _esp_status["batt_pct"]))
+            _esp_status["batt_state"] = int(parsed.get("batt_state", _esp_status["batt_state"]))
             _esp_status["raw"] = msg
 
     except Exception as e:

@@ -103,4 +103,13 @@
 #define MOTOR_SPEED_CRUISE   128
 #define MOTOR_SPEED_STOP     0
 
+/*====================================================================
+ * Battery Monitor Configuration
+ *====================================================================*/
+#define BATTERY_CELLS       2.0f
+#define CELL_FULL_V         4.20f
+#define CELL_EMPTY_V        3.30f
+#define CELL_LOW_V          3.50f
+#define CELL_CRITICAL_V     3.30f
+
 #endif // HARDWARE_CONFIG_H

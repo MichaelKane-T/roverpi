@@ -32,6 +32,7 @@
 #include "roverpi_fsm.h"
 #include "serial_uart.h"
 #include "gyroscope.h"
+#include "battery_monitor.h"
 
 static const char *TAG = "ROVERPI";
 
@@ -43,12 +44,14 @@ static const char *TAG = "ROVERPI";
 #define GUARD_PERIOD_MS         80
 #define SCAN_SETTLE_MS          200
 #define HEARTBEAT_TIMEOUT_MS    5000
+#define BATTERY_TASK_PERIOD_MS  3000
 
 #define STACK_SIZE              4096
 #define PRIORITY_UART           7
 #define PRIORITY_SCAN           6
 #define PRIORITY_FSM            5
 #define PRIORITY_GYRO           4
+#define PRIORITY_BATTERY        3
 
 #define TIMEOUT_STRIKE_MAX      3
 
@@ -60,6 +63,9 @@ typedef struct {
     drive_direction_t direction;
     bool              fault_detected;
     float             distance_cm;
+    float             battery_v;
+    float             battery_pct;
+    int               battery_state;   // 0=OK, 1=LOW, 2=CRITICAL
     TickType_t        last_heartbeat;
 } rover_shared_state_t;
 
@@ -68,6 +74,9 @@ static rover_shared_state_t rover_state = {
     .direction       = DIR_STOP,
     .fault_detected  = false,
     .distance_cm     = -1.0f,
+    .battery_v       = -1.0f,
+    .battery_pct     = 0.0f,
+    .battery_state   = 0,
     .last_heartbeat  = 0,
 };
 
@@ -94,6 +103,42 @@ static void request_targeted_scan(uint8_t angle_deg)
 {
     targeted_angle_deg = angle_deg;
     targeted_scan = true;
+}
+
+/*====================================================================
+ * Battery monitor task and helper functions.
+ *====================================================================*/
+static void battery_task(void *arg)
+{
+    (void)arg;
+
+    ESP_LOGI(TAG, "Battery task started");
+
+    while (1) {
+        battery_info_t batt = battery_monitor_read();
+
+        STATE_LOCK();
+        rover_state.battery_v = batt.voltage;
+        rover_state.battery_pct = batt.percent;
+        rover_state.battery_state = batt.state;
+
+        if (batt.state == BATTERY_CRITICAL) {
+            rover_state.direction = DIR_STOP;
+            rover_state.fault_detected = true;
+        }
+        STATE_UNLOCK();
+
+        if (batt.state == BATTERY_CRITICAL) {
+            ESP_LOGE(TAG, "Battery critical: %.2fV %.1f%%", batt.voltage, batt.percent);
+            serial_uart_send_line("ERR BATTERY CRITICAL");
+        } else if (batt.state == BATTERY_LOW) {
+            ESP_LOGW(TAG, "Battery low: %.2fV %.1f%%", batt.voltage, batt.percent);
+        } else {
+            ESP_LOGI(TAG, "Battery: %.2fV %.1f%%", batt.voltage, batt.percent);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_TASK_PERIOD_MS));
+    }
 }
 
 /*====================================================================
@@ -309,13 +354,29 @@ static void uart_task(void *arg)
                 bool clear = rover_state.path_clear;
                 int dir    = (int)rover_state.direction;
                 bool fault = rover_state.fault_detected;
-                STATE_UNLOCK();
+                float batt_v = rover_state.battery_v;
+                float batt_pct = rover_state.battery_pct;
+                int batt_state = rover_state.battery_state;
+                STATE_UNLOCK(); 
 
-                char status[128];
+                char status[192];
                 float yaw = mpu6050_get_yaw_deg();
                 float gz  = mpu6050_get_gz_dps();
 
-                snprintf(status, sizeof(status),"STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f",dist, clear, dir, fault, yaw, gz);
+                snprintf(
+                    status,
+                    sizeof(status),
+                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d",
+                    dist,
+                    clear,
+                    dir,
+                    fault,
+                    yaw,
+                    gz,
+                    batt_v,
+                    batt_pct,
+                    batt_state
+                );
                 serial_uart_send_line(status);
             }
 
@@ -519,6 +580,7 @@ void app_main(void)
     distance_sensor_init();
     roverpi_fsm_init();
     serial_uart_init();
+    battery_monitor_init();
 
     STATE_LOCK();
     rover_state.last_heartbeat = xTaskGetTickCount();
@@ -528,6 +590,6 @@ void app_main(void)
     xTaskCreate(gyro_task, "gyro", STACK_SIZE, NULL, PRIORITY_GYRO, NULL);
     xTaskCreate(scan_task, "scan", STACK_SIZE, NULL, PRIORITY_SCAN, NULL);
     xTaskCreate(fsm_task,  "fsm",  STACK_SIZE, NULL, PRIORITY_FSM,  NULL);
-
+    xTaskCreate(battery_task, "battery", STACK_SIZE, NULL, PRIORITY_BATTERY, NULL);
     ESP_LOGI(TAG, "All RoverPi tasks running");
 }
