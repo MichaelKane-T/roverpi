@@ -260,13 +260,35 @@ def create_app(ctx):
 
     @app.route("/battery")
     def battery():
-        """Battery telemetry endpoint."""
-        return jsonify(ctx.read_battery_stub())
+        """Battery telemetry endpoint from ESP32 ADC status."""
+        st = ctx.get_esp_status()
+
+        return jsonify({
+            "voltage": st.get("batt"),
+            "percent": st.get("batt_pct"),
+            "state": st.get("batt_state"),
+            "stub": False,
+            "source": "esp32_status",
+        })
 
     @app.route("/gyro")
     def gyro():
-        """Gyro telemetry endpoint."""
-        return jsonify(ctx.read_gyro_stub())
+        """Gyro telemetry endpoint from ESP32 MPU6050 status."""
+        st = ctx.get_esp_status()
+
+        return jsonify({
+            "yaw": st.get("yaw"),
+            "gz": st.get("gz"),
+            "roll": None,
+            "pitch": None,
+            "accel": {
+                "x": None,
+                "y": None,
+                "z": None,
+            },
+            "stub": False,
+            "source": "esp32_status",
+        })
 
     @app.route("/health")
     def health():
