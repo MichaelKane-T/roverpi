@@ -251,6 +251,42 @@ def _is_forward_stuck(esp_st: dict, safe_action: int) -> bool:
 
     return distance_not_changing and not_rotating
 
+# ===============================================================
+# Is turn stuck helper
+# =============================================================================
+_turn_stuck_history = []
+
+TURN_STUCK_WINDOW_S = 2.0
+TURN_STUCK_MIN_SAMPLES = 5
+TURN_GZ_MIN_DPS = 15.0
+
+def _is_turn_stuck(esp_st: dict, safe_action: int) -> bool:
+    """
+    Detect when rover is commanded to turn but gyro says it is barely rotating.
+    That usually means it is pinned against a wall/corner.
+    """
+    if safe_action not in (1, 2):  # LEFT or RIGHT
+        _turn_stuck_history.clear()
+        return False
+
+    gz = abs(float(esp_st.get("gz", 0.0)))
+    now = time.time()
+
+    _turn_stuck_history.append((now, gz))
+
+    cutoff = now - TURN_STUCK_WINDOW_S
+    _turn_stuck_history[:] = [
+        (t, g) for t, g in _turn_stuck_history
+        if t >= cutoff
+    ]
+
+    if len(_turn_stuck_history) < TURN_STUCK_MIN_SAMPLES:
+        return False
+
+    avg_gz = sum(g for _, g in _turn_stuck_history) / len(_turn_stuck_history)
+
+    return avg_gz < TURN_GZ_MIN_DPS
+
 
 # =============================================================================
 # Mode Helpers
@@ -605,13 +641,41 @@ def _escape_from_obstacle():
         return
 
     try:
-        print("[AUTO] Obstacle escape — reversing")
+        print("[AUTO] Obstacle escape — backing out")
+
+        # 1. Back away from wall/corner
         send_cmd("BACKWARD")
-        time.sleep(1.5)
+        time.sleep(1.0)
 
         send_cmd("STOP")
         time.sleep(0.2)
 
+        # 2. Scan after reversing
+        _safe_scan()
+        time.sleep(0.2)
+
+        with _scan_lock:
+            left = float(_scan_latest.get(150, 0.0))
+            front = float(_scan_latest.get(90, 0.0))
+            right = float(_scan_latest.get(30, 0.0))
+
+        print(f"[ESCAPE] scan right={right:.1f} front={front:.1f} left={left:.1f}")
+
+        # 3. Pick the more open side
+        if left > right:
+            turn_cmd = "LEFT"
+        else:
+            turn_cmd = "RIGHT"
+
+        # 4. Turn away from the wall using timed turn
+        print(f"[ESCAPE] turning {turn_cmd}")
+        send_cmd(turn_cmd)
+        time.sleep(0.8)
+
+        send_cmd("STOP")
+        time.sleep(0.2)
+
+        # 5. Refresh status
         send_cmd("STATUS")
         time.sleep(0.3)
 
