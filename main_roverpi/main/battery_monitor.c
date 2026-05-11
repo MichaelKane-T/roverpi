@@ -106,17 +106,37 @@ battery_state_t battery_monitor_get_state(float batt_v)
     return battery_state_from_voltage(batt_v);
 }
 
+static float battery_monitor_read_adc_voltage_once(void)
+{
+    int adc_raw = 0;
+
+    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, BATT_ADC_CHAN, &adc_raw));
+
+    float v_out = ((float)adc_raw / 4095.0f) * (ADC_VREF / 1000.0f);
+    return v_out * DIVIDER_RATIO;
+}
+
 battery_info_t battery_monitor_read(void)
 {
     battery_info_t info;
     float sum = 0.0f;
 
-    for (int i = 0; i < 5; i++) {
-        sum += battery_monitor_get_voltage();
-        vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(BATT_EN_GPIO, 1);
+
+    // 1uF cap across 47k needs much longer than 15ms
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Optional: throw away first read
+    (void)battery_monitor_read_adc_voltage_once();
+
+    for (int i = 0; i < 8; i++) {
+        sum += battery_monitor_read_adc_voltage_once();
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 
-    info.voltage = sum / 5.0f;
+    gpio_set_level(BATT_EN_GPIO, 0);
+
+    info.voltage = sum / 8.0f;
     info.percent = battery_percent_from_voltage(info.voltage);
     info.state   = battery_state_from_voltage(info.voltage);
 

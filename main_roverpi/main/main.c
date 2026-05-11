@@ -359,7 +359,7 @@ static void uart_task(void *arg)
                 if (faulted) serial_uart_send_line("ERR FAULT");
                 else         serial_uart_send_line("OK LEFT");
             }
-
+git
             else if (strcmp(rx_buf, "RIGHT") == 0) {
                 STATE_LOCK();
                 bool faulted = rover_state.fault_detected;
