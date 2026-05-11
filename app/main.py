@@ -847,10 +847,28 @@ def _auto_loop():
             continue
 
         if int(esp_st.get("ir", 0)) == 1:
-            print("[AUTO] IR obstacle detected — STOP and hold")
+            obstacle_strikes += 1
+            print(
+                f"[AUTO] IR obstacle detected "
+                f"strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}"
+            )
+
             send_cmd("STOP")
             send_cmd("STATUS")
-            time.sleep(0.3)
+            time.sleep(0.2)
+
+            if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
+                print("[AUTO] IR obstacle confirmed — executing escape")
+                _escape_from_obstacle()
+                _safe_scan()
+
+                obs = env.reset()
+                obstacle_strikes = 0
+                step = 0
+                last_action = 4
+                action_hold = 0
+
+            time.sleep(1.0 / AUTO_STEP_HZ)
             continue
 
         path_clear = esp_st["path"] == 1
