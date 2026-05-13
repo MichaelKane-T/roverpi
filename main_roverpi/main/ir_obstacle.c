@@ -4,19 +4,19 @@
 
 static const char *TAG = "IR_OBSTACLE";
 
-#define IR_OBSTACLE_GPIO GPIO_NUM_15
+#define IR_OBSTACLE_FRONT  GPIO_NUM_15
+#define IR_OBSTACLE_LEFT   GPIO_NUM_21
+#define IR_OBSTACLE_RIGHT  GPIO_NUM_12   // consider changing this
 
-/*
- * Most HW-201 / FC-51 style IR obstacle modules output:
- * LOW  = obstacle detected
- * HIGH = no obstacle
- */
 #define IR_ACTIVE_LEVEL 0
 
 esp_err_t ir_obstacle_init(void)
 {
     gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << IR_OBSTACLE_GPIO,
+        .pin_bit_mask =
+            (1ULL << IR_OBSTACLE_FRONT) |
+            (1ULL << IR_OBSTACLE_LEFT)  |
+            (1ULL << IR_OBSTACLE_RIGHT),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -26,7 +26,8 @@ esp_err_t ir_obstacle_init(void)
     esp_err_t ret = gpio_config(&io_conf);
 
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "IR obstacle sensor initialized on GPIO%d", IR_OBSTACLE_GPIO);
+        ESP_LOGI(TAG, "IR sensors initialized: front=%d left=%d right=%d",
+                 IR_OBSTACLE_FRONT, IR_OBSTACLE_LEFT, IR_OBSTACLE_RIGHT);
     }
 
     return ret;
@@ -34,6 +35,16 @@ esp_err_t ir_obstacle_init(void)
 
 bool ir_obstacle_detected(void)
 {
-    int level = gpio_get_level(IR_OBSTACLE_GPIO);
-    return level == IR_ACTIVE_LEVEL;
+    return gpio_get_level(IR_OBSTACLE_FRONT) == IR_ACTIVE_LEVEL;
+}
+
+ir_obstacle_state_t ir_obstacle_read_all(void)
+{
+    ir_obstacle_state_t state = {
+        .front_blocked = gpio_get_level(IR_OBSTACLE_FRONT) == IR_ACTIVE_LEVEL,
+        .left_blocked  = gpio_get_level(IR_OBSTACLE_LEFT) == IR_ACTIVE_LEVEL,
+        .right_blocked = gpio_get_level(IR_OBSTACLE_RIGHT) == IR_ACTIVE_LEVEL,
+    };
+
+    return state;
 }

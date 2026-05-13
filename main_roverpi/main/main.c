@@ -70,7 +70,7 @@ typedef struct {
     float             battery_pct;
     int               battery_state;   // 0=OK, 1=LOW, 2=CRITICAL
     bool              battery_critical;
-    bool              ir_obstacle;
+    ir_obstacle_state_t ir_obstacle_state;
     TickType_t        last_heartbeat;
 } rover_shared_state_t;
 
@@ -83,7 +83,7 @@ static rover_shared_state_t rover_state = {
     .battery_pct     = 0.0f,
     .battery_state   = 0,
     .battery_critical = false,
-    .ir_obstacle     = false,
+    .ir_obstacle_state = {false, false, false},
     .last_heartbeat  = 0,
 };
 
@@ -102,22 +102,35 @@ static void ir_obstacle_task(void *arg)
     ESP_LOGI(TAG, "IR obstacle task started");
 
     while (1) {
-        bool blocked = ir_obstacle_detected();
+        ir_obstacle_state_t ir = ir_obstacle_read_all();
 
         STATE_LOCK();
-        rover_state.ir_obstacle = blocked;
 
-        if (blocked) {
+        rover_state.ir_obstacle_state = ir;
+
+        if (ir.front_blocked) {
             rover_state.path_clear = false;
 
             if (rover_state.direction == DIR_FORWARD) {
                 rover_state.direction = DIR_STOP;
             }
         }
+
+        if (ir.left_blocked && rover_state.direction == DIR_LEFT) {
+            rover_state.direction = DIR_STOP;
+        }
+
+        if (ir.right_blocked && rover_state.direction == DIR_RIGHT) {
+            rover_state.direction = DIR_STOP;
+        }
+
         STATE_UNLOCK();
 
-        if (blocked) {
-            ESP_LOGW(TAG, "IR obstacle detected — forward blocked");
+        if (ir.front_blocked || ir.left_blocked || ir.right_blocked) {
+            ESP_LOGW(TAG, "IR blocked: front=%d left=%d right=%d",
+                     ir.front_blocked,
+                     ir.left_blocked,
+                     ir.right_blocked);
         }
 
         vTaskDelay(pdMS_TO_TICKS(IR_TASK_PERIOD_MS));
@@ -326,7 +339,7 @@ static void uart_task(void *arg)
 
             else if (strcmp(rx_buf, "FORWARD") == 0) {
                 STATE_LOCK();
-                bool blocked = !rover_state.path_clear || rover_state.ir_obstacle;
+                bool blocked = !rover_state.path_clear || rover_state.ir_obstacle_state.front_blocked;
                 bool faulted = rover_state.fault_detected;
                 if (faulted)      rover_state.direction = DIR_STOP;
                 else if (blocked) rover_state.direction = DIR_STOP;
@@ -349,26 +362,40 @@ static void uart_task(void *arg)
                 else         serial_uart_send_line("OK BACKWARD");
             }
 
-            else if (strcmp(rx_buf, "LEFT") == 0) {
+           else if (strcmp(rx_buf, "LEFT") == 0) {
+                ir_obstacle_state_t ir = ir_obstacle_read_all();
+
                 STATE_LOCK();
+                rover_state.ir_obstacle_state = ir;
+                bool blocked = ir.left_blocked;
                 bool faulted = rover_state.fault_detected;
-                if (faulted) rover_state.direction = DIR_STOP;
-                else         rover_state.direction = DIR_LEFT;
+
+                if (faulted)      rover_state.direction = DIR_STOP;
+                else if (blocked) rover_state.direction = DIR_STOP;
+                else              rover_state.direction = DIR_LEFT;
                 STATE_UNLOCK();
 
-                if (faulted) serial_uart_send_line("ERR FAULT");
-                else         serial_uart_send_line("OK LEFT");
+                if (faulted)      serial_uart_send_line("ERR FAULT");
+                else if (blocked) serial_uart_send_line("IR LEFT BLOCKED");
+                else              serial_uart_send_line("OK LEFT");
             }
-git
+            
             else if (strcmp(rx_buf, "RIGHT") == 0) {
+                ir_obstacle_state_t ir = ir_obstacle_read_all();
+
                 STATE_LOCK();
+                rover_state.ir_obstacle_state = ir;
+                bool blocked = ir.right_blocked;
                 bool faulted = rover_state.fault_detected;
-                if (faulted) rover_state.direction = DIR_STOP;
-                else         rover_state.direction = DIR_RIGHT;
+
+                if (faulted)      rover_state.direction = DIR_STOP;
+                else if (blocked) rover_state.direction = DIR_STOP;
+                else              rover_state.direction = DIR_RIGHT;
                 STATE_UNLOCK();
 
-                if (faulted) serial_uart_send_line("ERR FAULT");
-                else         serial_uart_send_line("OK RIGHT");
+                if (faulted)      serial_uart_send_line("ERR FAULT");
+                else if (blocked) serial_uart_send_line("IR RIGHT BLOCKED");
+                else              serial_uart_send_line("OK RIGHT");
             }
 
             else if (strcmp(rx_buf, "STOP") == 0) {
@@ -413,8 +440,10 @@ git
                 float batt_v = rover_state.battery_v;
                 float batt_pct = rover_state.battery_pct;
                 int batt_state = rover_state.battery_state;
-                bool ir = rover_state.ir_obstacle;
-                STATE_UNLOCK(); 
+                bool ir_front = rover_state.ir_obstacle_state.front_blocked;
+                bool ir_left = rover_state.ir_obstacle_state.left_blocked;
+                bool ir_right = rover_state.ir_obstacle_state.right_blocked;
+                STATE_UNLOCK();
 
                 char status[224];
                 float yaw = mpu6050_get_yaw_deg();
@@ -423,7 +452,7 @@ git
                 snprintf(
                     status,
                     sizeof(status),
-                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d ir=%d",
+                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d ir_front=%d ir_left=%d ir_right=%d",
                     dist,
                     clear,
                     dir,
@@ -433,7 +462,9 @@ git
                     batt_v,
                     batt_pct,
                     batt_state,
-                    ir
+                    ir_front,
+                    ir_left,
+                    ir_right
                 );
                 serial_uart_send_line(status);
             }
@@ -638,7 +669,7 @@ void app_main(void)
     distance_sensor_init();
     roverpi_fsm_init();
     serial_uart_init();
-    battery_monitor_init();\
+    battery_monitor_init();
     ir_obstacle_init();
 
     STATE_LOCK();
