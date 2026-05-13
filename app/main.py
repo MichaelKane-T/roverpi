@@ -154,7 +154,9 @@ _esp_status = {
     "batt": -1.0,
     "batt_pct": 0.0,
     "batt_state": 0,
-    "ir": 0,
+    "ir_front": 0,
+    "ir_left": 0,
+    "ir_right": 0,
 }
 
 _escape_lock = threading.Lock()
@@ -289,6 +291,53 @@ def _is_turn_stuck(esp_st: dict, safe_action: int) -> bool:
 
 
 # =============================================================================
+# IR side safety helper
+# =============================================================================
+
+def _apply_ir_side_safety(action: int, esp_st: dict) -> int:
+    """
+    Use ESP32 side IR sensors as a last safety filter before sending movement.
+
+    Action convention used by RoverEnv/RoverAgent:
+        0 = FORWARD
+        1 = LEFT
+        2 = RIGHT
+        3 = BACKWARD
+        4 = STOP
+
+    Behavior:
+    - front IR blocks FORWARD
+    - left IR blocks LEFT turns
+    - right IR blocks RIGHT turns
+    - if one side is blocked and the opposite side is clear, steer away
+    - if both sides are blocked, STOP instead of grinding into a wall
+    """
+    ir_front = int(esp_st.get("ir_front", 0))
+    ir_left = int(esp_st.get("ir_left", 0))
+    ir_right = int(esp_st.get("ir_right", 0))
+
+    if action == 0 and ir_front:
+        print("[IR] Front blocked — overriding FORWARD to STOP")
+        return 4
+
+    if action == 1 and ir_left:
+        if not ir_right:
+            print("[IR] Left blocked — overriding LEFT to RIGHT")
+            return 2
+        print("[IR] Left and right blocked — overriding LEFT to STOP")
+        return 4
+
+    if action == 2 and ir_right:
+        if not ir_left:
+            print("[IR] Right blocked — overriding RIGHT to LEFT")
+            return 1
+        print("[IR] Left and right blocked — overriding RIGHT to STOP")
+        return 4
+
+    return action
+
+
+# =============================================================================
 # Mode Helpers
 # =============================================================================
 
@@ -407,7 +456,9 @@ def _update_esp_status(msg: str):
             _esp_status["batt"] = float(parsed.get("batt", _esp_status["batt"]))
             _esp_status["batt_pct"] = float(parsed.get("batt_pct", _esp_status["batt_pct"]))
             _esp_status["batt_state"] = int(parsed.get("batt_state", _esp_status["batt_state"]))
-            _esp_status["ir"] = int(parsed.get("ir", _esp_status["ir"]))
+            _esp_status["ir_front"] = int(parsed.get("ir_front", _esp_status["ir_front"]))
+            _esp_status["ir_left"] = int(parsed.get("ir_left", _esp_status["ir_left"]))
+            _esp_status["ir_right"] = int(parsed.get("ir_right", _esp_status["ir_right"]))
             _esp_status["raw"] = msg
 
     except Exception as e:
@@ -661,16 +712,30 @@ def _escape_from_obstacle():
 
         print(f"[ESCAPE] scan right={right:.1f} front={front:.1f} left={left:.1f}")
 
-        # 3. Pick the more open side
-        if left > right:
+        # 3. Pick the more open side, but respect side IR sensors.
+        esp_st = get_esp_status()
+        ir_left = int(esp_st.get("ir_left", 0))
+        ir_right = int(esp_st.get("ir_right", 0))
+
+        if ir_left and not ir_right:
+            turn_cmd = "RIGHT"
+            print("[ESCAPE] left IR blocked — choosing RIGHT")
+        elif ir_right and not ir_left:
+            turn_cmd = "LEFT"
+            print("[ESCAPE] right IR blocked — choosing LEFT")
+        elif ir_left and ir_right:
+            turn_cmd = "STOP"
+            print("[ESCAPE] both side IR sensors blocked — holding STOP")
+        elif left > right:
             turn_cmd = "LEFT"
         else:
             turn_cmd = "RIGHT"
 
         # 4. Turn away from the wall using timed turn
-        print(f"[ESCAPE] turning {turn_cmd}")
-        send_cmd(turn_cmd)
-        time.sleep(0.8)
+        if turn_cmd != "STOP":
+            print(f"[ESCAPE] turning {turn_cmd}")
+            send_cmd(turn_cmd)
+            time.sleep(0.8)
 
         send_cmd("STOP")
         time.sleep(0.2)
@@ -734,6 +799,11 @@ def _build_learning_state(obs, esp_st: dict, last_action: int) -> dict:
         "yaw_cos": yaw_cos,
         "gz_dps": gz,
 
+        # Side IR state
+        "ir_front": int(esp_st.get("ir_front", 0)),
+        "ir_left": int(esp_st.get("ir_left", 0)),
+        "ir_right": int(esp_st.get("ir_right", 0)),
+
         # Previous control context
         "last_action": int(last_action),
     }
@@ -777,6 +847,7 @@ def _log_experience(
             "agent_action": int(info.get("agent_action", action)),
             "safe_action": safe_action,
             "overridden": bool(info.get("overridden", False)),
+            "ir_overridden": bool(info.get("ir_overridden", False)),
             "distance_cm": float(info.get("distance_cm", esp_after.get("dist", -2.0))),
             "raw_status_before": esp_before.get("raw", ""),
             "raw_status_after": esp_after.get("raw", ""),
@@ -910,11 +981,16 @@ def _auto_loop():
             time.sleep(1.0)
             continue
 
-        if int(esp_st.get("ir", 0)) == 1:
+        ir_front = int(esp_st.get("ir_front", 0))
+        ir_left = int(esp_st.get("ir_left", 0))
+        ir_right = int(esp_st.get("ir_right", 0))
+
+        if ir_front == 1:
             obstacle_strikes += 1
             print(
-                f"[AUTO] IR obstacle detected "
-                f"strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX}"
+                f"[AUTO] Front IR obstacle detected "
+                f"strike {obstacle_strikes}/{OBSTACLE_STRIKE_MAX} "
+                f"left={ir_left} right={ir_right}"
             )
 
             send_cmd("STOP")
@@ -922,7 +998,7 @@ def _auto_loop():
             time.sleep(0.2)
 
             if obstacle_strikes >= OBSTACLE_STRIKE_MAX:
-                print("[AUTO] IR obstacle confirmed — executing escape")
+                print("[AUTO] Front IR obstacle confirmed — executing escape")
                 _escape_from_obstacle()
                 _safe_scan()
 
@@ -979,7 +1055,18 @@ def _auto_loop():
 
         action, action_hold = _predator_choose_action(obs, last_action, action_hold)
 
-        next_obs, reward, _, info = env.step(action)
+        # Final side-IR safety filter before RoverEnv sends the command.
+        # This prevents the agent from turning into a wall that the side IR sees.
+        ir_safe_action = _apply_ir_side_safety(action, esp_before)
+
+        next_obs, reward, _, info = env.step(ir_safe_action)
+
+        if ir_safe_action != action:
+            info["ir_overridden"] = True
+            info["agent_action"] = action
+            info["safe_action"] = int(info.get("safe_action", ir_safe_action))
+        else:
+            info["ir_overridden"] = False
 
         esp_after = get_esp_status()
         safe_action = int(info.get("safe_action", action))
@@ -1020,6 +1107,8 @@ def _auto_loop():
             f"[PREDATOR] agent={info['agent_action']} "
             f"safe={info['safe_action']} "
             f"override={info['overridden']} "
+            f"ir_override={info.get('ir_overridden', False)} "
+            f"ir(L/F/R)={esp_after.get('ir_left', 0)}/{esp_after.get('ir_front', 0)}/{esp_after.get('ir_right', 0)} "
             f"reward={reward:.2f} "
             f"dist={info['distance_cm']:.1f}"
         )
