@@ -47,14 +47,16 @@ ACTION_CMDS = ["FORWARD", "LEFT", "RIGHT", "BACKWARD", "STOP"]
 OBS_DIM     = 13
 
 # ── reward weights ────────────────────────────────────────────────────────────
-R_FORWARD       =  2.0
-R_TURN          = -0.05
-R_BACKWARD      = -1.0    # stronger penalty — backward is a last resort
-R_STOP          = -0.25
-R_OBSTACLE_NEAR = -2.0
-R_OBSTACLE_HIT  = -5.0
-R_REVISIT       = -0.5
-R_BACKWARD_ESCAPE = 0.4  # small positive when backward genuinely opens space
+R_FORWARD          =  2.0
+R_TURN             = -0.05
+R_TURN_GOOD        =  0.8
+R_TURN_BLOCKED     = -2.0
+R_BACKWARD         = -1.0
+R_STOP             = -0.25
+R_OBSTACLE_NEAR    = -2.0
+R_OBSTACLE_HIT     = -5.0
+R_REVISIT          = -0.5
+R_BACKWARD_ESCAPE  =  0.4
 
 
 class RoverEnv:
@@ -239,7 +241,28 @@ class RoverEnv:
         if action == 0:
             reward += R_FORWARD
         elif action in (1, 2):
+
+            left_dist, right_dist = self._get_side_dists()
+
             reward += R_TURN
+
+            # LEFT turn
+            if action == 1:
+
+                # Reward turning toward open space
+                if left_dist > right_dist:
+                    reward += R_TURN_GOOD
+                else:
+                    reward += R_TURN_BLOCKED
+
+            # RIGHT turn
+            elif action == 2:
+
+                # Reward turning toward open space
+                if right_dist > left_dist:
+                    reward += R_TURN_GOOD
+                else:
+                    reward += R_TURN_BLOCKED
         elif action == 3:
             reward += R_BACKWARD
             # Small bonus if backward was genuinely needed and opens space
@@ -293,15 +316,19 @@ class RoverEnv:
     def _get_side_dists(self) -> tuple:
         """
         Returns (left_dist_cm, right_dist_cm) from latest scan readings.
-        Uses SCANNER_SERVO_LEFT_DEG (30) and SCANNER_SERVO_RIGHT_DEG (150).
-        Falls back to MAX_DIST_CM if no scan data yet.
+
+        Servo mapping:
+            30°  = RIGHT
+            90°  = CENTER
+            150° = LEFT
         """
+
         with self._scan_lock:
             readings = dict(self._scan_readings)
 
-        # Angles from hardware_config: LEFT=30, CENTER=90, RIGHT=150
-        left  = readings.get(30,  MAX_DIST_CM)
-        right = readings.get(150, MAX_DIST_CM)
+        left  = readings.get(150, MAX_DIST_CM)
+        right = readings.get(30, MAX_DIST_CM)
+
         return left, right
 
     # ── helpers ───────────────────────────────────────────────────────────────
