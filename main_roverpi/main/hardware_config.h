@@ -69,7 +69,7 @@
 #define TRIG_PULSE_US               10
 #define HCSR04_TIMEOUT_US           30000
 #define HCSR04_SOUND_CM_PER_US      0.0343f
-#define OBSTACLE_STOP_CM            15.0f
+#define OBSTACLE_STOP_CM            50.0f
 
 /*====================================================================
  * TB6612FNG Motor Driver Pins

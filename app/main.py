@@ -975,6 +975,24 @@ def _auto_loop():
         # Obstacle check before action
         # ---------------------------------------------------------------------
         esp_st = get_esp_status()
+
+        ir_front = int(esp_st.get("ir_front", 0))
+        ir_left  = int(esp_st.get("ir_left", 0))
+        ir_right = int(esp_st.get("ir_right", 0))
+        dist_cm  = float(esp_st.get("dist", -2.0))
+
+        if ir_left and ir_right and 0.0 < dist_cm < 70.0:
+            print("[AUTO] Side trap detected — both side IR blocked, escaping")
+            send_cmd("STOP")
+            _escape_from_obstacle()
+
+            obs = env.reset()
+            obstacle_strikes = 0
+            step = 0
+            last_action = 4
+            action_hold = 0
+            continue
+        
         if int(esp_st.get("batt_state", 0)) >= 2:
             print("[AUTO] Battery critical — STOP and hold")
             send_cmd("STOP")
