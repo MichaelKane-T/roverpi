@@ -157,6 +157,7 @@ _esp_status = {
     "ir_front": 0,
     "ir_left": 0,
     "ir_right": 0,
+    "ir_front_up": 0
 }
 
 _escape_lock = threading.Lock()
@@ -315,8 +316,9 @@ def _apply_ir_side_safety(action: int, esp_st: dict) -> int:
     ir_front = int(esp_st.get("ir_front", 0))
     ir_left = int(esp_st.get("ir_left", 0))
     ir_right = int(esp_st.get("ir_right", 0))
+    ir_front_up = int(esp_st.get("ir_front_up", 0))
 
-    if action == 0 and ir_front:
+    if action == 0 and (ir_front or ir_front_up):
         print("[IR] Front blocked — overriding FORWARD to STOP")
         return 4
 
@@ -390,32 +392,62 @@ def touch_manual():
 
 def read_battery_stub() -> dict:
     """
-    Placeholder battery endpoint.
-
-    Replace this later with real INA219 / MAX17043 / ESP32 ADC data.
+    Read real battery data from latest ESP32 STATUS.
+    ESP32 sends:
+        batt
+        batt_pct
+        batt_state
     """
+    esp = get_esp_status()
+
+    state = int(esp.get("batt_state", 0))
+
+    if state == 2:
+        label = "CRITICAL"
+    elif state == 1:
+        label = "LOW"
+    else:
+        label = "OK"
+
     return {
-        "voltage": None,
-        "percent": None,
-        "charging": None,
-        "stub": True,
-        "note": "Battery monitor hardware not yet installed",
+        "voltage": float(esp.get("batt", -1.0)),
+        "percent": float(esp.get("batt_pct", 0.0)),
+        "state": state,
+        "state_label": label,
+        "charging": False,
+        "stub": False,
+        "source": "esp32_adc",
     }
 
 
 def read_gyro_stub() -> dict:
     """
-    Placeholder gyro endpoint.
-
-    Replace this later with real MPU6050 / ICM-42688 data.
+    Read real gyro/yaw data from latest ESP32 STATUS.
+    ESP32 sends:
+        yaw
+        gz
     """
+    esp = get_esp_status()
+
+    yaw = float(esp.get("yaw", 0.0))
+    gz = float(esp.get("gz", 0.0))
+
     return {
         "roll": None,
         "pitch": None,
-        "yaw": None,
-        "accel": {"x": None, "y": None, "z": None},
-        "stub": True,
-        "note": "IMU hardware not yet installed",
+        "yaw": yaw,
+        "gyro": {
+            "x": None,
+            "y": None,
+            "z": gz,
+        },
+        "accel": {
+            "x": None,
+            "y": None,
+            "z": None,
+        },
+        "stub": False,
+        "source": "esp32_mpu6050",
     }
 
 
@@ -459,6 +491,7 @@ def _update_esp_status(msg: str):
             _esp_status["ir_front"] = int(parsed.get("ir_front", _esp_status["ir_front"]))
             _esp_status["ir_left"] = int(parsed.get("ir_left", _esp_status["ir_left"]))
             _esp_status["ir_right"] = int(parsed.get("ir_right", _esp_status["ir_right"]))
+            _esp_status["ir_front_up"] = int(parsed.get("ir_front_up", _esp_status["ir_front_up"]))
             _esp_status["raw"] = msg
 
     except Exception as e:
