@@ -124,7 +124,7 @@ def create_app(ctx):
         static_folder=ASSETS_DIR,
         static_url_path="/assets",
     )
-    CORS(app)git 
+    CORS(app)
 
     # =========================================================================
     # Video Stream Helper
