@@ -8,6 +8,7 @@ typedef struct {
     bool front_blocked;
     bool left_blocked;
     bool right_blocked;
+    bool front_up_blocked;
 } ir_obstacle_state_t;
 
 /***************** Function prototypes *****************/
