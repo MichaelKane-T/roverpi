@@ -72,6 +72,7 @@ import time
 import cv2
 
 from flask import Flask, Response, jsonify, send_from_directory
+from flask_cors import CORS
 
 import pantilt
 
@@ -123,6 +124,7 @@ def create_app(ctx):
         static_folder=ASSETS_DIR,
         static_url_path="/assets",
     )
+    CORS(app)git 
 
     # =========================================================================
     # Video Stream Helper
