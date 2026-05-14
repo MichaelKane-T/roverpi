@@ -1079,6 +1079,11 @@ def _auto_loop():
 
         next_obs, reward, _, info = env.step(ir_safe_action)
 
+        # Refresh ESP32 status after the movement so training uses fresh sensor data.
+        send_cmd("STATUS")
+        time.sleep(0.15)
+        esp_after = get_esp_status()
+
         if ir_safe_action != action:
             info["ir_overridden"] = True
             info["agent_action"] = action
@@ -1086,7 +1091,7 @@ def _auto_loop():
         else:
             info["ir_overridden"] = False
 
-        esp_after = get_esp_status()
+        #esp_after = get_esp_status()
         safe_action = int(info.get("safe_action", action))
 
         if _is_forward_stuck(esp_after, safe_action):
