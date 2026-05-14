@@ -111,4 +111,13 @@
 #define CELL_EMPTY_V        3.30f
 #define CELL_LOW_V          3.50f   // 7.0V pack
 #define CELL_CRITICAL_V     3.25f   // 6.5V pack
+
+/*====================================================================
+ * IR Obstacle Sensors
+ *====================================================================*/
+#define IR_OBSTACLE_FRONT  GPIO_NUM_15
+#define IR_OBSTACLE_LEFT   GPIO_NUM_21
+#define IR_OBSTACLE_RIGHT  GPIO_NUM_12   
+#define IR_OBSTACLE_FRONT_UP GPIO_NUM_34  
+
 #endif // HARDWARE_CONFIG_H

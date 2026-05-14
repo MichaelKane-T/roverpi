@@ -83,7 +83,7 @@ static rover_shared_state_t rover_state = {
     .battery_pct     = 0.0f,
     .battery_state   = 0,
     .battery_critical = false,
-    .ir_obstacle_state = {false, false, false},
+    .ir_obstacle_state = {false, false, false, false},
     .last_heartbeat  = 0,
 };
 
@@ -108,7 +108,7 @@ static void ir_obstacle_task(void *arg)
 
         rover_state.ir_obstacle_state = ir;
 
-        if (ir.front_blocked) {
+        if (ir.front_blocked || ir.front_up_blocked) {
             rover_state.path_clear = false;
 
             if (rover_state.direction == DIR_FORWARD) {
@@ -126,11 +126,12 @@ static void ir_obstacle_task(void *arg)
 
         STATE_UNLOCK();
 
-        if (ir.front_blocked || ir.left_blocked || ir.right_blocked) {
-            ESP_LOGW(TAG, "IR blocked: front=%d left=%d right=%d",
+        if (ir.front_blocked || ir.left_blocked || ir.right_blocked || ir.front_up_blocked) {
+            ESP_LOGW(TAG, "IR blocked: front=%d left=%d right=%d front_up=%d",
                      ir.front_blocked,
                      ir.left_blocked,
-                     ir.right_blocked);
+                     ir.right_blocked,
+                     ir.front_up_blocked);
         }
 
         vTaskDelay(pdMS_TO_TICKS(IR_TASK_PERIOD_MS));
@@ -339,7 +340,7 @@ static void uart_task(void *arg)
 
             else if (strcmp(rx_buf, "FORWARD") == 0) {
                 STATE_LOCK();
-                bool blocked = !rover_state.path_clear || rover_state.ir_obstacle_state.front_blocked;
+                bool blocked = !rover_state.path_clear || rover_state.ir_obstacle_state.front_blocked || rover_state.ir_obstacle_state.front_up_blocked;
                 bool faulted = rover_state.fault_detected;
                 if (faulted)      rover_state.direction = DIR_STOP;
                 else if (blocked) rover_state.direction = DIR_STOP;
@@ -443,6 +444,7 @@ static void uart_task(void *arg)
                 bool ir_front = rover_state.ir_obstacle_state.front_blocked;
                 bool ir_left = rover_state.ir_obstacle_state.left_blocked;
                 bool ir_right = rover_state.ir_obstacle_state.right_blocked;
+                bool ir_front_up = rover_state.ir_obstacle_state.front_up_blocked;
                 STATE_UNLOCK();
 
                 char status[224];
@@ -452,7 +454,7 @@ static void uart_task(void *arg)
                 snprintf(
                     status,
                     sizeof(status),
-                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d ir_front=%d ir_left=%d ir_right=%d",
+                    "STATUS dist=%.1f path=%d dir=%d fault=%d yaw=%.2f gz=%.2f batt=%.2f batt_pct=%.1f batt_state=%d ir_front=%d ir_left=%d ir_right=%d ir_front_up=%d",
                     dist,
                     clear,
                     dir,
@@ -464,7 +466,8 @@ static void uart_task(void *arg)
                     batt_state,
                     ir_front,
                     ir_left,
-                    ir_right
+                    ir_right,
+                    ir_front_up
                 );
                 serial_uart_send_line(status);
             }
