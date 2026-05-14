@@ -608,13 +608,13 @@ def _predator_choose_action(obs, last_action, hold_count):
 
     # If blocked, ask the agent but let env.safe_action() override safely.
     if not path_clear:
-        return agent.select_action(obs), 0
+        return agent.select_action(obs, esp_st), 0
 
     # Hold forward briefly so movement looks intentional.
     if hold_count > 0 and last_action == 0:
         return last_action, hold_count - 1
 
-    action = agent.select_action(obs)
+    action = agent.select_action(obs, esp_st)
 
     # Do not stop for no reason when path is clear.
     if action == 4:
@@ -992,7 +992,7 @@ def _auto_loop():
             last_action = 4
             action_hold = 0
             continue
-        
+
         if int(esp_st.get("batt_state", 0)) >= 2:
             print("[AUTO] Battery critical — STOP and hold")
             send_cmd("STOP")

@@ -150,29 +150,24 @@ class RoverAgent:
 
     # ── inference ────────────────────────────────────────────────────────────
 
-    def select_action(self, obs):
-        """
-        Choose action using cloud model first.
-        Falls back to random/local policy if cloud fails.
-        """
-
+    def select_action(self, obs, esp_st=None):
         if self.USE_CLOUD:
             try:
-                # Build same 21-feature shape used during training.
                 obs_list = np.asarray(obs, dtype=np.float32).flatten().tolist()
 
+                if esp_st is None:
+                    esp_st = {}
+
                 features = obs_list + [
-                    200.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
+                    float(esp_st.get("dist", 200.0)),
+                    float(esp_st.get("path", 1)),
+                    float(esp_st.get("yaw", 0.0)),
+                    float(esp_st.get("gz", 0.0)),
+                    float(esp_st.get("ir_front", 0)),
+                    float(esp_st.get("ir_left", 0)),
+                    float(esp_st.get("ir_right", 0)),
                     float(getattr(self, "last_action", 4)),
                 ]
-
-                features = [float(x) for x in features]
 
                 r = requests.post(
                     self.CLOUD_URL,
@@ -188,11 +183,9 @@ class RoverAgent:
             except Exception as e:
                 print(f"[Agent] Cloud inference failed: {e}")
 
-        # fallback
         action = self._random_action()
         self.last_action = action
         return action
-
     def _tflite_predict(self, obs: np.ndarray) -> int:
         inp_detail = self.interpreter.get_input_details()[0]
         out_detail = self.interpreter.get_output_details()[0]

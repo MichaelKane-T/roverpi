@@ -16,33 +16,31 @@ import numpy as np
 
 
 class SimpleVision:
-    def __init__(self):
-        pass
+    def analyze_features(self, frame):
+        small = cv2.resize(frame, (160, 120))
+        hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
 
-    def analyze(self, frame):
-        """
-        Very lightweight placeholder logic.
-        Returns an annotated frame and a label.
-        """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        mean_brightness = np.mean(gray)
+        h, w, _ = hsv.shape
+        thirds = [
+            hsv[:, :w//3, :],
+            hsv[:, w//3:2*w//3, :],
+            hsv[:, 2*w//3:, :],
+        ]
 
-        if mean_brightness < 60:
-            label = "dark_scene"
-        elif mean_brightness > 180:
-            label = "bright_scene"
-        else:
-            label = "normal_scene"
+        features = []
 
-        annotated = frame.copy()
-        cv2.putText(
-            annotated,
-            f"Scene: {label}",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2
-        )
+        for region in thirds:
+            mean_h = float(region[:, :, 0].mean()) / 180.0
+            mean_s = float(region[:, :, 1].mean()) / 255.0
+            mean_v = float(region[:, :, 2].mean()) / 255.0
+            edge_density = self._edge_density(region)
 
-        return annotated, label
+            features.extend([mean_h, mean_s, mean_v, edge_density])
+
+        return features
+
+    def _edge_density(self, hsv_region):
+        gray = cv2.cvtColor(hsv_region, cv2.COLOR_HSV2BGR)
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        return float(np.mean(edges > 0))
