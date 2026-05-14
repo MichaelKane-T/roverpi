@@ -724,8 +724,27 @@ def _escape_from_obstacle():
             turn_cmd = "LEFT"
             print("[ESCAPE] right IR blocked — choosing LEFT")
         elif ir_left and ir_right:
-            turn_cmd = "STOP"
-            print("[ESCAPE] both side IR sensors blocked — holding STOP")
+            print("[ESCAPE] both IR blocked — forcing reverse-turn escape")
+
+            # Force a blind escape turn.
+            # Pick the more open ultrasonic side.
+            if left >= right:
+                turn_cmd = "LEFT"
+            else:
+                turn_cmd = "RIGHT"
+
+            # Longer escape rotation
+            send_cmd(turn_cmd)
+            time.sleep(1.4)
+
+            send_cmd("BACKWARD")
+            time.sleep(1.0)
+
+            send_cmd("STOP")
+            time.sleep(0.2)
+
+            return
+        
         elif left > right:
             turn_cmd = "LEFT"
         else:
