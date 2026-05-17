@@ -167,11 +167,22 @@ static void battery_task(void *arg)
 
     static uint8_t critical_count = 0;
     static uint8_t low_count = 0;
+    static float filtered_voltage = -1.0f;
 
     ESP_LOGI(TAG, "Battery task started");
 
     while (1) {
         battery_info_t batt = battery_monitor_read();
+
+        if (filtered_voltage < 0.0f) {
+            filtered_voltage = batt.voltage;
+        } else {
+            filtered_voltage = (0.85f * filtered_voltage) + (0.15f * batt.voltage);
+        }
+
+        batt.voltage = filtered_voltage;
+        batt.percent = battery_monitor_get_percent(batt.voltage);
+        batt.state = battery_monitor_get_state(batt.voltage);
 
         if (batt.state == BATTERY_CRITICAL) {
             critical_count++;
@@ -185,7 +196,7 @@ static void battery_task(void *arg)
             low_count = 0;
         }
 
-        bool critical_confirmed = critical_count >= 3;
+        bool critical_confirmed = critical_count >= 8;
 
         STATE_LOCK();
         rover_state.battery_v = batt.voltage;
@@ -201,7 +212,7 @@ static void battery_task(void *arg)
         if (critical_confirmed) {
             ESP_LOGE(TAG, "Battery critical confirmed: %.2fV %.1f%%", batt.voltage, batt.percent);
             serial_uart_send_line("ERR BATTERY CRITICAL");
-        } else if (batt.state == BATTERY_LOW) {
+        } else if (low_count >= 3) {
             ESP_LOGW(TAG, "Battery low: %.2fV %.1f%%", batt.voltage, batt.percent);
         } else {
             ESP_LOGI(TAG, "Battery: %.2fV %.1f%%", batt.voltage, batt.percent);
