@@ -172,7 +172,7 @@ class RoverAgent:
                 r = requests.post(
                     self.CLOUD_URL,
                     json={"features": features},
-                    timeout=0.25,
+                    timeout=(1.0, 2.0)
                 )
 
                 if r.ok:
