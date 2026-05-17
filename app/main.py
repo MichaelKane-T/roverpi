@@ -61,6 +61,8 @@ from rover_agent import RoverAgent
 from occupancy_map import OccupancyMap
 from app_flask import create_app
 
+from collections import deque
+import time
 
 # =============================================================================
 # Configuration
@@ -183,6 +185,57 @@ def _safe_scan():
         time.sleep(2.2)
     finally:
         _scan_in_progress.clear()
+
+
+#===============================================================
+# Navigation memory / anti-loop helpers
+#===============================================================
+turn_history = deque(maxlen=8)
+failed_escape_history = deque(maxlen=12)
+
+WARNING_DIST = 45
+AVOID_DIST = 30
+EMERGENCY_DIST = 15
+
+def yaw_diff(a, b):
+    return abs((a - b + 180) % 360 - 180)
+
+def remember_turn(direction):
+    turn_history.append((direction, time.time()))
+
+def remember_failed_escape(direction, yaw, dist):
+    failed_escape_history.append({
+        "dir": direction,
+        "yaw": yaw,
+        "dist": dist,
+        "time": time.time()
+    })
+
+def recently_failed(direction, yaw, window_sec=20, yaw_tol=35):
+    now = time.time()
+    for item in failed_escape_history:
+        if now - item["time"] <= window_sec:
+            if item["dir"] == direction and yaw_diff(yaw, item["yaw"]) < yaw_tol:
+                return True
+    return False
+
+def detect_turn_loop():
+    dirs = [d for d, _ in turn_history]
+
+    if len(dirs) >= 4 and dirs[-4:] == ["LEFT", "LEFT", "LEFT", "LEFT"]:
+        return True
+
+    if len(dirs) >= 4 and dirs[-4:] == ["RIGHT", "RIGHT", "RIGHT", "RIGHT"]:
+        return True
+
+    if len(dirs) >= 6 and dirs[-6:] == ["LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT"]:
+        return True
+
+    return False
+
+def direction_penalty(direction):
+    dirs = [d for d, _ in turn_history]
+    return dirs.count(direction) * 10
 
 # =============================================================================
 # forward stuck helper
@@ -745,52 +798,102 @@ def _escape_from_obstacle():
 
         print(f"[ESCAPE] scan right={right:.1f} front={front:.1f} left={left:.1f}")
 
-        # 3. Pick the more open side, but respect side IR sensors.
+               # 3. Pick an escape direction using:
+        #    - side IR safety
+        #    - ultrasonic scan distances
+        #    - turn-history penalties
+        #    - failed escape memory
         esp_st = get_esp_status()
         ir_left = int(esp_st.get("ir_left", 0))
         ir_right = int(esp_st.get("ir_right", 0))
+        yaw = float(esp_st.get("yaw", 0.0))
 
-        if ir_left and not ir_right:
-            turn_cmd = "RIGHT"
-            print("[ESCAPE] left IR blocked — choosing RIGHT")
-        elif ir_right and not ir_left:
-            turn_cmd = "LEFT"
-            print("[ESCAPE] right IR blocked — choosing LEFT")
-        elif ir_left and ir_right:
+        score_right = right - direction_penalty("RIGHT")
+        score_left = left - direction_penalty("LEFT")
+        score_front = front - direction_penalty("FRONT")
+
+        candidates = [
+            ("RIGHT", score_right, right),
+            ("LEFT", score_left, left),
+            ("FRONT", score_front, front),
+        ]
+
+        # Side IR is a hard veto.
+        if ir_left:
+            candidates = [c for c in candidates if c[0] != "LEFT"]
+            print("[ESCAPE] left IR blocked — veto LEFT")
+
+        if ir_right:
+            candidates = [c for c in candidates if c[0] != "RIGHT"]
+            print("[ESCAPE] right IR blocked — veto RIGHT")
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        chosen = "BACKWARD"
+
+        for direction, score, raw_dist in candidates:
+            if raw_dist <= AVOID_DIST:
+                print(f"[ESCAPE] rejecting {direction}: too close ({raw_dist:.1f}cm)")
+                continue
+
+            if recently_failed(direction, yaw):
+                print(f"[ESCAPE] rejecting {direction}: recently failed near yaw={yaw:.1f}")
+                continue
+
+            chosen = direction
+            break
+
+        if ir_left and ir_right:
             print("[ESCAPE] both IR blocked — forcing reverse-turn escape")
+            chosen = "BACKWARD"
 
-            # Force a blind escape turn.
-            # Pick the more open ultrasonic side.
-            if left >= right:
-                turn_cmd = "LEFT"
-            else:
-                turn_cmd = "RIGHT"
-
-            # Longer escape rotation
-            send_cmd(turn_cmd)
-            time.sleep(1.4)
-
-            send_cmd("BACKWARD")
-            time.sleep(1.0)
-
-            send_cmd("STOP")
-            time.sleep(0.2)
-
-            return
-        
-        elif left > right:
+        # 4. Execute selected escape movement.
+        if chosen == "LEFT":
+            remember_turn("LEFT")
             turn_cmd = "LEFT"
-        else:
-            turn_cmd = "RIGHT"
-
-        # 4. Turn away from the wall using timed turn
-        if turn_cmd != "STOP":
-            print(f"[ESCAPE] turning {turn_cmd}")
+            print("[ESCAPE] turning LEFT")
             send_cmd(turn_cmd)
             time.sleep(0.8)
 
+        elif chosen == "RIGHT":
+            remember_turn("RIGHT")
+            turn_cmd = "RIGHT"
+            print("[ESCAPE] turning RIGHT")
+            send_cmd(turn_cmd)
+            time.sleep(0.8)
+
+        elif chosen == "FRONT":
+            turn_cmd = "FORWARD"
+            print("[ESCAPE] front looks open — nudging FORWARD")
+            send_cmd(turn_cmd)
+            time.sleep(0.5)
+
+        else:
+            turn_cmd = "BACKWARD"
+            print("[ESCAPE] no safe turn found — backing up")
+            send_cmd("BACKWARD")
+            time.sleep(1.0)
+
+            # After backing up, force a direction opposite of recent bias.
+            left_bias = direction_penalty("LEFT")
+            right_bias = direction_penalty("RIGHT")
+
+            if left_bias > right_bias:
+                turn_cmd = "RIGHT"
+            else:
+                turn_cmd = "LEFT"
+
+            remember_turn(turn_cmd)
+            print(f"[ESCAPE] reverse-turning {turn_cmd}")
+            send_cmd(turn_cmd)
+            time.sleep(1.2)
+
         send_cmd("STOP")
         time.sleep(0.2)
+
+        # If the escape picked a path but the rover is still blocked later,
+        # the AUTO loop can call remember_failed_escape().
+        #remember_failed_escape(chosen, yaw, min(left, front, right))
 
         # 5. Refresh status
         send_cmd("STATUS")
@@ -886,6 +989,13 @@ def _log_experience(
         os.makedirs(DATA_DIR, exist_ok=True)
 
         safe_action = int(info.get("safe_action", action))
+
+        if safe_action == 1:
+            remember_turn("LEFT")
+        elif safe_action == 2:
+            remember_turn("RIGHT")
+        elif safe_action == 0:
+            remember_turn("FRONT")
 
         sample = {
             "time": time.time(),
@@ -1105,6 +1215,12 @@ def _auto_loop():
 
                 _escape_from_obstacle()
 
+                remember_failed_escape(
+                    "BLOCKED",
+                    float(esp_st.get("yaw", 0.0)),
+                    dist_cm
+                )
+
                 obs = env.reset()
                 obstacle_strikes = 0
                 step = 0
@@ -1124,6 +1240,13 @@ def _auto_loop():
         esp_before = get_esp_status()
 
         action, action_hold = _predator_choose_action(obs, last_action, action_hold)
+
+        if detect_turn_loop():
+            print("[AUTO] Turn loop detected — forcing escape")
+            _escape_from_obstacle()
+            obstacle_strikes = 0
+            time.sleep(1.0)
+            continue
 
         # Final side-IR safety filter before RoverEnv sends the command.
         # This prevents the agent from turning into a wall that the side IR sees.
