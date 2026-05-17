@@ -119,7 +119,7 @@ def export_tflite(keras_model, path=TFLITE_PATH):
 # ── main agent class ─────────────────────────────────────────────────────────
 
 class RoverAgent:
-    CLOUD_URL = "http://192.168.1.185:7000/predict"
+    CLOUD_URL = "http://192.168.1.197:7000/predict"
     USE_CLOUD = True
 
     def __init__(self):
