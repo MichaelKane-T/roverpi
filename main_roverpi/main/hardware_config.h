@@ -72,17 +72,19 @@
 #define OBSTACLE_STOP_CM            30.0f
 
 /*====================================================================
- * TB6612FNG Motor Driver Pins
+ * TB6612FNG Motor Driver Pins - SWAPPED FOR CORRECT STEERING
  *====================================================================*/
 #define TB_STBY GPIO_NUM_14
 
-#define TB_AIN1 GPIO_NUM_26
-#define TB_AIN2 GPIO_NUM_27
-#define TB_PWMA GPIO_NUM_25
+// Channel A (Now mapped to the physical Pins that were B)
+#define TB_AIN1 GPIO_NUM_32
+#define TB_AIN2 GPIO_NUM_33
+#define TB_PWMA GPIO_NUM_13
 
-#define TB_BIN1 GPIO_NUM_32
-#define TB_BIN2 GPIO_NUM_33
-#define TB_PWMB GPIO_NUM_13
+// Channel B (Now mapped to the physical Pins that were A)
+#define TB_BIN1 GPIO_NUM_26
+#define TB_BIN2 GPIO_NUM_27
+#define TB_PWMB GPIO_NUM_25
 
 /*====================================================================
  * Motor PWM
