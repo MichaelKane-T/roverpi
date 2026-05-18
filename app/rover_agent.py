@@ -158,7 +158,7 @@ class RoverAgent:
                 if esp_st is None:
                     esp_st = {}
 
-                features = obs_list + [
+                extra = [
                     float(esp_st.get("dist", 200.0)),
                     float(esp_st.get("path", 1)),
                     float(esp_st.get("yaw", 0.0)),
@@ -169,21 +169,54 @@ class RoverAgent:
                     float(getattr(self, "last_action", 4)),
                 ]
 
+                features = obs_list + extra
+
+                # The ML server expects exactly 21 inputs.
+                original_len = len(features)
+
+                if len(features) < 21:
+                    features = features + [0.0] * (21 - len(features))
+
+                if len(features) > 21:
+                    features = features[:21]
+
                 r = requests.post(
                     self.CLOUD_URL,
                     json={"features": features},
                     timeout=(2.0, 4.0)
                 )
 
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {"raw": r.text}
+
                 if r.ok:
-                    action = int(r.json()["action"])
+                    action = int(data["action"])
+                    action_name = data.get("action_name", str(action))
+
+                    print(
+                        f"[Agent] CLOUD USED "
+                        f"action={action} name={action_name} "
+                        f"features={original_len}->21 "
+                        f"probs={data.get('probs')}"
+                    )
+
                     self.last_action = action
                     return action
+
+                print(
+                    f"[Agent] Cloud bad response: "
+                    f"status={r.status_code} "
+                    f"features={original_len}->21 "
+                    f"data={data}"
+                )
 
             except Exception as e:
                 print(f"[Agent] Cloud inference failed: {e}")
 
         action = self._random_action()
+        print(f"[Agent] RANDOM fallback action={action}")
         self.last_action = action
         return action
     def _tflite_predict(self, obs: np.ndarray) -> int:
