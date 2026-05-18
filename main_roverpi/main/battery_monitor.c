@@ -11,6 +11,7 @@ static const char *TAG = "BATT_DRIVER";
 // Pin Definitions
 #define BATT_EN_GPIO     GPIO_NUM_23
 #define BATT_ADC_CHAN    ADC_CHANNEL_7   // GPIO35
+#define BATTERY_CAL_FACTOR 1.151f
 
 // Hardware Math
 #define R1               100000.0f    // 100k
@@ -136,7 +137,8 @@ battery_info_t battery_monitor_read(void)
 
     gpio_set_level(BATT_EN_GPIO, 0);
 
-    info.voltage = sum / 8.0f;
+    info.voltage = (sum / 8.0f) * BATTERY_CAL_FACTOR;;
+    ESP_LOGI(TAG, "Battery voltage read: %.2f V", info.voltage);
     info.percent = battery_percent_from_voltage(info.voltage);
     info.state   = battery_state_from_voltage(info.voltage);
 

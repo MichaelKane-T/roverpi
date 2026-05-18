@@ -21,22 +21,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-/* I2C config */
-#define I2C_MASTER_SCL_IO       22
-#define I2C_MASTER_SDA_IO       19
-#define I2C_MASTER_NUM          I2C_NUM_0
-#define I2C_MASTER_FREQ_HZ      400000
-
-/* MPU6050 config */
-#define MPU6050_ADDR            0x68
-#define MPU6050_PWR_MGMT_1      0x6B
-#define MPU6050_GYRO_CONFIG     0x1B
-#define MPU6050_GYRO_XOUT_H     0x43
-
-/* Gyro conversion */
-#define GYRO_SCALE_250DPS       131.0f
-#define CALIBRATION_SAMPLES     300
+#include  "hardware_config.h"
 
 static const char *GYRO_TAG = "GYRO";
 
