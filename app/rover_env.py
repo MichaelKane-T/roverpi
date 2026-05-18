@@ -49,8 +49,9 @@ OBS_DIM     = 13
 # ── reward weights ────────────────────────────────────────────────────────────
 R_FORWARD          =  2.0
 R_TURN             = -0.05
-R_TURN_GOOD        =  0.8
-R_TURN_BLOCKED     = -2.0
+R_TURN_GOOD        =  0.25
+R_TURN_BLOCKED     = -2.5
+R_INVALID_DIST     = -5.0
 R_BACKWARD         = -1.0
 R_STOP             = -0.25
 R_OBSTACLE_NEAR    = -2.0
@@ -203,8 +204,12 @@ class RoverEnv:
         # -1.0 = timeout/open space, treat as max distance for ML/reward.
         # -2.0 = no status yet, treat as max distance fallback.
         #  0.0 = bad/blocked read, keep as 0.
-        if dist == -1.0 or dist == -2.0:
-            dist_for_obs = MAX_DIST_CM
+        if dist == -1.0:
+            # Timeout/unknown should not look like perfect open space.
+            dist_for_obs = 50.0
+        elif dist == -2.0:
+            # No valid status yet.
+            dist_for_obs = 0.0
         else:
             dist_for_obs = dist
 
@@ -237,6 +242,11 @@ class RoverEnv:
 
     def _compute_reward(self, action: int, obs: np.ndarray) -> float:
         reward = 0.0
+
+        raw_dist = self._get_forward_dist()
+
+        if raw_dist < 0.0 or raw_dist == 0.0:
+            reward += R_INVALID_DIST
 
         if action == 0:
             reward += R_FORWARD
@@ -326,8 +336,14 @@ class RoverEnv:
         with self._scan_lock:
             readings = dict(self._scan_readings)
 
-        left  = readings.get(150, MAX_DIST_CM)
-        right = readings.get(30, MAX_DIST_CM)
+        left  = readings.get(150, -1.0)
+        right = readings.get(30, -1.0)
+
+        if left < 0:
+            left = 0.0
+
+        if right < 0:
+            right = 0.0
 
         return left, right
 
